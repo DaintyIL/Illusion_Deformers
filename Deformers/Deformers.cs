@@ -12,11 +12,12 @@ using System.Collections;
 using ExtensibleSaveFormat;
 using MessagePack;
 
+[BepInDependency(KoikatuAPI.GUID, KoikatuAPI.VersionConst)]
 [BepInPlugin(GUID, "Deformers", Version)]
 public class Deformers : BaseUnityPlugin
 {
     public const string GUID = "dainty.deformers";
-    public const string Version = "0.1";
+    public const string Version = "0.2";
     internal static new ManualLogSource Logger;
     void Awake()
     {
@@ -50,7 +51,6 @@ public class Deformers : BaseUnityPlugin
             DeformersController deformersController = __instance.GetComponent<DeformersController>();
             __instance.StartCoroutine(deformersController.GetAllRenderers());
         }
-
     }
 }
 
@@ -74,7 +74,11 @@ public class DeformersController : CharaCustomFunctionController
 
         foreach (SkinnedMeshRenderer renderer in Renderers)
         {
-            if(renderer == null)
+            if (renderer == null)
+            {
+                continue;
+            }
+            if (renderer.sharedMesh == null)
             {
                 continue;
             }
@@ -83,19 +87,24 @@ public class DeformersController : CharaCustomFunctionController
             OrigMeshes[renderer.sharedMesh].GetVertices(origVertices);
             for (var j = 0; j < newVertices.Count; j++)
             {
-                if(newVertices[j] != origVertices[j])
+                if (newVertices[j] != origVertices[j])
                 {
-                    savedVertices.Add(new float[] {j, newVertices[j].x, newVertices[j].y, newVertices[j].z });
+                    savedVertices.Add(new float[] { j, newVertices[j].x, newVertices[j].y, newVertices[j].z });
                 }
             }
-            
+
             if (savedVertices.Count > 0)
             {
+                if (deformData.data.ContainsKey(renderer.sharedMesh.name + newVertices.Count))
+                {
+                    continue;
+                }
                 deformData.data.Add(renderer.sharedMesh.name + newVertices.Count, MessagePackSerializer.Serialize(savedVertices, MessagePack.Resolvers.ContractlessStandardResolver.Instance));
             }
         }
         deformData.version = 1;
-        if(deformData.data.Count > 0){
+        if (deformData.data.Count > 0)
+        {
             SetExtendedData(deformData);
         }
         else
@@ -109,7 +118,6 @@ public class DeformersController : CharaCustomFunctionController
         OrigMeshes = new Dictionary<Mesh, Mesh>();
         StartCoroutine(GetAllRenderers(true));
     }
-
     public IEnumerator GetAllRenderers(bool reload = false)
     {
         yield return new WaitForSeconds(0.5f); //renderers.meshes get replaced by plugins at some point, I tried hooking the load manually and setting priority to last, doesn't work. Something async I guess.
@@ -117,7 +125,7 @@ public class DeformersController : CharaCustomFunctionController
         Renderers = transform.GetComponentsInChildren(typeof(SkinnedMeshRenderer), true);
         foreach (SkinnedMeshRenderer renderer in Renderers)
         {
-            if(renderer.sharedMesh == null)
+            if (renderer.sharedMesh == null)
             {
                 continue;
             }
@@ -137,10 +145,13 @@ public class DeformersController : CharaCustomFunctionController
             PluginData deformData = GetExtendedData();
             if (deformData != null)
             {
-                for (var j = 0; j < Renderers.Length; j++)
+                foreach (SkinnedMeshRenderer renderer in Renderers)
                 {
-                    SkinnedMeshRenderer renderer = (SkinnedMeshRenderer)Renderers[j];
-                    if (renderer == null )
+                    if (renderer == null)
+                    {
+                        continue;
+                    }
+                    if (renderer.sharedMesh == null)
                     {
                         continue;
                     }
@@ -173,42 +184,68 @@ public class DeformersController : CharaCustomFunctionController
             return;
         }
 
-        for (int i = 0; i < Renderers.Length; i++)
+        foreach (SkinnedMeshRenderer renderer in Renderers)
         {
-            OrigMeshes[((SkinnedMeshRenderer)Renderers[i]).sharedMesh].GetVertices(newVertices);
-            ((SkinnedMeshRenderer)Renderers[i]).sharedMesh.SetVertices(newVertices);
+            if (renderer == null)
+            {
+                continue;
+            }
+            if (renderer.sharedMesh == null)
+            {
+                continue;
+            }
+            if (!OrigMeshes.ContainsKey(renderer.sharedMesh)){
+                continue;
+            }
+            OrigMeshes[renderer.sharedMesh].GetVertices(newVertices);
+            renderer.sharedMesh.SetVertices(newVertices);
 
-            ((SkinnedMeshRenderer)Renderers[i]).BakeMesh(bakedMesh);
+            Transform parent = renderer.transform.parent;
+            renderer.transform.parent = null;
+
+            Vector3 localScale = renderer.transform.localScale;
+            renderer.transform.localScale = Vector3.one;
+
+            renderer.BakeMesh(bakedMesh);
             bakedMesh.GetVertices(bakedVertices);
 
-            Matrix4x4[] boneMatrices = new Matrix4x4[((SkinnedMeshRenderer)Renderers[i]).bones.Length];
-            BoneWeight[] boneWeights = ((SkinnedMeshRenderer)Renderers[i]).sharedMesh.boneWeights;
-            Transform[] skinnedBones = ((SkinnedMeshRenderer)Renderers[i]).bones;
-            Matrix4x4[] meshBindposes = ((SkinnedMeshRenderer)Renderers[i]).sharedMesh.bindposes;
+            Matrix4x4[] boneMatrices = new Matrix4x4[renderer.bones.Length];
+            BoneWeight[] boneWeights = renderer.sharedMesh.boneWeights;
+            Transform[] skinnedBones = renderer.bones;
+            Matrix4x4[] meshBindposes = renderer.sharedMesh.bindposes;
             for (int j = 0; j < boneMatrices.Length; j++)
             {
-                boneMatrices[j] = skinnedBones[j].localToWorldMatrix * meshBindposes[j];
+                if (skinnedBones[j] != null && meshBindposes[j] != null)
+                {
+                    boneMatrices[j] = skinnedBones[j].localToWorldMatrix * meshBindposes[j];
+                }
+                else
+                {
+                    boneMatrices[j] = Matrix4x4.identity;
+                }
             }
 
             foreach (Deformer deformer in Deformers)
             {
                 if (deformer.FilterMaterial.shader.name != "Standard")
                 {
-                    foreach (Material material in ((SkinnedMeshRenderer)Renderers[i]).materials)
+                    foreach (Material material in renderer.materials)
                     {
                         if (material.shader.name == deformer.FilterMaterial.shader.name)
                         {
-                            deformer.Deform(Renderers[i], newVertices, bakedVertices, boneMatrices, boneWeights);
+                            deformer.Deform(renderer, newVertices, bakedVertices, boneMatrices, boneWeights);
                             break;
                         }
                     }
                 }
                 else
                 {
-                    deformer.Deform(Renderers[i], newVertices, bakedVertices, boneMatrices, boneWeights);
+                    deformer.Deform(renderer, newVertices, bakedVertices, boneMatrices, boneWeights);
                 }
             }
-            ((SkinnedMeshRenderer)Renderers[i]).sharedMesh.SetVertices(newVertices);
+            renderer.transform.localScale = localScale;
+            renderer.transform.parent = parent;
+            renderer.sharedMesh.SetVertices(newVertices);
         }
         lastDeform = Time.time;
         if (CR_running == false)
@@ -222,10 +259,18 @@ public class DeformersController : CharaCustomFunctionController
         CR_running = true;
         yield return new WaitUntil(() => (Time.time - lastDeform) >= 1);
 
-        for (int i = 0; i < Renderers.Length; i++)
+        foreach (SkinnedMeshRenderer renderer in Renderers)
         {
-            NormalSolver.RecalculateNormals(((SkinnedMeshRenderer)Renderers[i]).sharedMesh, 50f);
-            ((SkinnedMeshRenderer)Renderers[i]).sharedMesh.RecalculateTangents();
+            if (renderer == null)
+            {
+                continue;
+            }
+            if (renderer.sharedMesh == null)
+            {
+                continue;
+            }
+            NormalSolver.RecalculateNormals(renderer.sharedMesh, 50f);
+            renderer.sharedMesh.RecalculateTangents();
         }
 
         CR_running = false;
