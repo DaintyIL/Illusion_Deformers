@@ -17,13 +17,20 @@ using MessagePack;
 public class Deformers : BaseUnityPlugin
 {
     public const string GUID = "dainty.deformers";
-    public const string Version = "0.2";
+    public const string Version = "0.21";
     internal static new ManualLogSource Logger;
     void Awake()
     {
         Logger = base.Logger;
         CharacterApi.RegisterExtraBehaviour<DeformersController>(GUID);
         Harmony.CreateAndPatchAll(typeof(Hooks));
+        AccessoriesApi.AccessoryTransferred += AccCopy; //copying destroys clothing renderer references, somehow
+    }
+    void AccCopy(object sender, AccessoryTransferEventArgs e)
+    {
+        ChaControl chaCtrl = MakerAPI.GetCharacterControl();
+        DeformersController deformersController = chaCtrl.GetComponent<DeformersController>();
+        chaCtrl.StartCoroutine(deformersController.GetAllRenderers(false, true));
     }
 
     class Hooks
@@ -47,6 +54,13 @@ public class Deformers : BaseUnityPlugin
         [HarmonyPostfix]
         [HarmonyPatch(typeof(ChaControl), nameof(ChaControl.ChangeHead), new Type[] { typeof(int), typeof(bool) })]
         private static void ChangeHeadHook(ChaControl __instance, int _headId, bool forceChange)
+        {
+            DeformersController deformersController = __instance.GetComponent<DeformersController>();
+            __instance.StartCoroutine(deformersController.GetAllRenderers());
+        }
+        [HarmonyPostfix]
+        [HarmonyPatch(typeof(ChaControl), nameof(ChaControl.ChangeAccessory), new Type[] { typeof(int), typeof(int), typeof(int), typeof(string), typeof(bool) })]
+        private static void ChangeAccessoryHook(ChaControl __instance, int slotNo, int type, int id, string parentKey, bool forceChange)
         {
             DeformersController deformersController = __instance.GetComponent<DeformersController>();
             __instance.StartCoroutine(deformersController.GetAllRenderers());
@@ -118,7 +132,7 @@ public class DeformersController : CharaCustomFunctionController
         OrigMeshes = new Dictionary<Mesh, Mesh>();
         StartCoroutine(GetAllRenderers(true));
     }
-    public IEnumerator GetAllRenderers(bool reload = false)
+    public IEnumerator GetAllRenderers(bool reload = false, bool deform = false)
     {
         yield return new WaitForSeconds(0.5f); //renderers.meshes get replaced by plugins at some point, I tried hooking the load manually and setting priority to last, doesn't work. Something async I guess.
 
@@ -175,6 +189,11 @@ public class DeformersController : CharaCustomFunctionController
                 }
             }
         }
+
+        if (deform)
+        {
+            StartCoroutine(WaitDeform());
+        }
     }
 
     public void DeformAll()
@@ -194,7 +213,8 @@ public class DeformersController : CharaCustomFunctionController
             {
                 continue;
             }
-            if (!OrigMeshes.ContainsKey(renderer.sharedMesh)){
+            if (!OrigMeshes.ContainsKey(renderer.sharedMesh))
+            {
                 continue;
             }
             OrigMeshes[renderer.sharedMesh].GetVertices(newVertices);
@@ -284,13 +304,18 @@ public class DeformersController : CharaCustomFunctionController
         }
         Deformers.Add(deformer);
         Deformers.Sort((x, y) => x.AccessoryIndex.CompareTo(y.AccessoryIndex)); //sort deformers top to bottom
-        //DeformAll();
+        StartCoroutine(WaitDeform());
     }
 
     internal void RemoveDeformer(Deformer deformer)
     {
         Deformers.Remove(deformer);
-        //DeformAll();
+        StartCoroutine(WaitDeform());
+    }
+    internal IEnumerator WaitDeform() //when stuff happens before skinning
+    {
+        yield return new WaitForEndOfFrame();
+        DeformAll();
     }
 }
 
