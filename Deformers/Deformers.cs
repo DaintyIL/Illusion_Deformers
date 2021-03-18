@@ -74,7 +74,7 @@ public class DeformersController : CharaCustomFunctionController
 {
     public Component[] Renderers { get; private set; }
     public Dictionary<Mesh, Mesh> OrigMeshes { get; private set; }
-    public List<Deformer> Deformers { get; set; }
+    public List<Deformer> DeformerList { get; set; }
     List<Vector3> newVertices = new List<Vector3>();
     List<Vector3> bakedVertices = new List<Vector3>();
     Mesh bakedMesh = new Mesh();
@@ -134,7 +134,7 @@ public class DeformersController : CharaCustomFunctionController
     }
     public IEnumerator GetAllRenderers(bool reload = false, bool deform = false)
     {
-        yield return new WaitForSeconds(0.5f); //renderers.meshes get replaced by plugins at some point, I tried hooking the load manually and setting priority to last, doesn't work. Something async I guess.
+        yield return new WaitForSeconds(0.5f); //renderers/meshes get replaced by plugins at some point, I tried hooking the load manually and setting priority to last, doesn't work. Something async I guess.
 
         Renderers = transform.GetComponentsInChildren(typeof(SkinnedMeshRenderer), true);
         foreach (SkinnedMeshRenderer renderer in Renderers)
@@ -152,6 +152,10 @@ public class DeformersController : CharaCustomFunctionController
             String name = renderer.sharedMesh.name;
             renderer.sharedMesh = copyMesh;
             renderer.sharedMesh.name = name;
+            if (!renderer.sharedMesh.isReadable)
+            {
+                Deformers.Logger.LogWarning("Cannot deform " + renderer.sharedMesh.name + ", not read/write enabled.");
+            }
         }
 
         if (reload)
@@ -198,7 +202,7 @@ public class DeformersController : CharaCustomFunctionController
 
     public void DeformAll()
     {
-        if (Deformers == null || Renderers == null)
+        if (DeformerList == null || Renderers == null)
         {
             return;
         }
@@ -214,6 +218,10 @@ public class DeformersController : CharaCustomFunctionController
                 continue;
             }
             if (!OrigMeshes.ContainsKey(renderer.sharedMesh))
+            {
+                continue;
+            }
+            if (!renderer.sharedMesh.isReadable)
             {
                 continue;
             }
@@ -245,7 +253,7 @@ public class DeformersController : CharaCustomFunctionController
                 }
             }
 
-            foreach (Deformer deformer in Deformers)
+            foreach (Deformer deformer in DeformerList)
             {
                 if (deformer.FilterMaterial.shader.name != "Standard")
                 {
@@ -289,6 +297,10 @@ public class DeformersController : CharaCustomFunctionController
             {
                 continue;
             }
+            if (!renderer.sharedMesh.isReadable)
+            {
+                continue;
+            }
             NormalSolver.RecalculateNormals(renderer.sharedMesh, 50f);
             renderer.sharedMesh.RecalculateTangents();
         }
@@ -298,18 +310,18 @@ public class DeformersController : CharaCustomFunctionController
 
     internal void AddDeformer(Deformer deformer)
     {
-        if (Deformers == null)
+        if (DeformerList == null)
         {
-            Deformers = new List<Deformer>();
+            DeformerList = new List<Deformer>();
         }
-        Deformers.Add(deformer);
-        Deformers.Sort((x, y) => x.AccessoryIndex.CompareTo(y.AccessoryIndex)); //sort deformers top to bottom
+        DeformerList.Add(deformer);
+        DeformerList.Sort((x, y) => x.AccessoryIndex.CompareTo(y.AccessoryIndex)); //sort deformers top to bottom
         StartCoroutine(WaitDeform());
     }
 
     internal void RemoveDeformer(Deformer deformer)
     {
-        Deformers.Remove(deformer);
+        DeformerList.Remove(deformer);
         StartCoroutine(WaitDeform());
     }
     internal IEnumerator WaitDeform() //when stuff happens before skinning
