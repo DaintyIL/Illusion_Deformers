@@ -234,22 +234,35 @@ public class DeformersController : CharaCustomFunctionController
             Vector3 localScale = renderer.transform.localScale;
             renderer.transform.localScale = Vector3.one;
 
-            renderer.BakeMesh(bakedMesh);
-            bakedMesh.GetVertices(bakedVertices);
-
             Matrix4x4[] boneMatrices = new Matrix4x4[renderer.bones.Length];
             BoneWeight[] boneWeights = renderer.sharedMesh.boneWeights;
             Transform[] skinnedBones = renderer.bones;
             Matrix4x4[] meshBindposes = renderer.sharedMesh.bindposes;
-            for (int j = 0; j < boneMatrices.Length; j++)
+
+            if(boneWeights.Length > 0)
             {
-                if (skinnedBones[j] != null && meshBindposes[j] != null)
+                renderer.BakeMesh(bakedMesh);
+                bakedMesh.GetVertices(bakedVertices);
+                for (int j = 0; j < boneMatrices.Length; j++)
                 {
-                    boneMatrices[j] = skinnedBones[j].localToWorldMatrix * meshBindposes[j];
+                    if (skinnedBones[j] != null && meshBindposes[j] != null)
+                    {
+                        boneMatrices[j] = skinnedBones[j].localToWorldMatrix * meshBindposes[j];
+                    }
+                    else
+                    {
+                        boneMatrices[j] = Matrix4x4.identity;
+                    }
                 }
-                else
+            }
+            else
+            {
+                bakedVertices = new List<Vector3>(newVertices);
+                Transform rootBone = renderer.rootBone;
+                for (int j = 0; j < bakedVertices.Count; j++)
                 {
-                    boneMatrices[j] = Matrix4x4.identity;
+                    bakedVertices[j] = rootBone.TransformPoint(bakedVertices[j]);
+                    bakedVertices[j] = renderer.transform.InverseTransformPoint(bakedVertices[j]);
                 }
             }
 
@@ -322,7 +335,10 @@ public class DeformersController : CharaCustomFunctionController
     internal void RemoveDeformer(Deformer deformer)
     {
         DeformerList.Remove(deformer);
-        StartCoroutine(WaitDeform());
+        if (gameObject.activeInHierarchy)
+        {
+            StartCoroutine(WaitDeform());
+        }
     }
     internal IEnumerator WaitDeform() //when stuff happens before skinning
     {
@@ -474,9 +490,16 @@ public class Squeezer : Deformer
                 float factor = 1 - ((distance / radius) * falloff);
                 bakedVertices[j] = Vector3.Lerp(bakedVertices[j], point2, strength * factor);
 
-                BoneWeight weight = boneWeights[j];
-                Matrix4x4 reverseSkinningMatrix = GetReverseSkinningMatrix(boneMatrices, weight);
-                newVertices[j] = reverseSkinningMatrix.MultiplyPoint3x4(renderer.transform.TransformPoint(bakedVertices[j]));
+                if (boneWeights.Length > 0) {
+                    BoneWeight weight = boneWeights[j];
+                    Matrix4x4 reverseSkinningMatrix = GetReverseSkinningMatrix(boneMatrices, weight);
+                    newVertices[j] = reverseSkinningMatrix.MultiplyPoint3x4(renderer.transform.TransformPoint(bakedVertices[j]));
+                }
+                else
+                {
+                    Vector3 v = renderer.transform.TransformPoint(bakedVertices[j]);
+                    newVertices[j] = ((SkinnedMeshRenderer)renderer).rootBone.InverseTransformPoint(v);
+                }
             }
         }
     }
@@ -514,9 +537,17 @@ public class Bulger : Deformer
                 float factor = 1 - ((distance / radius) * falloff);
                 bakedVertices[j] = Vector3.Lerp(bakedVertices[j], newPoint, strength * factor);
 
-                BoneWeight weight = boneWeights[j];
-                Matrix4x4 reverseSkinningMatrix = GetReverseSkinningMatrix(boneMatrices, weight);
-                newVertices[j] = reverseSkinningMatrix.MultiplyPoint3x4(renderer.transform.TransformPoint(bakedVertices[j]));
+                if (boneWeights.Length > 0)
+                {
+                    BoneWeight weight = boneWeights[j];
+                    Matrix4x4 reverseSkinningMatrix = GetReverseSkinningMatrix(boneMatrices, weight);
+                    newVertices[j] = reverseSkinningMatrix.MultiplyPoint3x4(renderer.transform.TransformPoint(bakedVertices[j]));
+                }
+                else
+                {
+                    Vector3 v = renderer.transform.TransformPoint(bakedVertices[j]);
+                    newVertices[j] = ((SkinnedMeshRenderer)renderer).rootBone.InverseTransformPoint(v);
+                }
             }
         }
     }
@@ -554,9 +585,17 @@ public class Mover : Deformer
                 factor = 1 - ((distance / radius) * falloff);
                 bakedVertices[j] = Vector3.Lerp(bakedVertices[j], newPoint, strength * factor);
 
-                BoneWeight weight = boneWeights[j];
-                Matrix4x4 reverseSkinningMatrix = GetReverseSkinningMatrix(boneMatrices, weight);
-                newVertices[j] = reverseSkinningMatrix.MultiplyPoint3x4(renderer.transform.TransformPoint(bakedVertices[j]));
+                if (boneWeights.Length > 0)
+                {
+                    BoneWeight weight = boneWeights[j];
+                    Matrix4x4 reverseSkinningMatrix = GetReverseSkinningMatrix(boneMatrices, weight);
+                    newVertices[j] = reverseSkinningMatrix.MultiplyPoint3x4(renderer.transform.TransformPoint(bakedVertices[j]));
+                }
+                else
+                {
+                    Vector3 v = renderer.transform.TransformPoint(bakedVertices[j]);
+                    newVertices[j] = ((SkinnedMeshRenderer)renderer).rootBone.InverseTransformPoint(v);
+                }
             }
         }
     }
