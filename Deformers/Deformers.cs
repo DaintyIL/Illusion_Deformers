@@ -96,6 +96,10 @@ public class DeformersController : CharaCustomFunctionController
             {
                 continue;
             }
+            if (!renderer.sharedMesh.isReadable)
+            {
+                continue;
+            }
             List<float[]> savedVertices = new List<float[]>();
             renderer.sharedMesh.GetVertices(newVertices);
             OrigMeshes[renderer.sharedMesh].GetVertices(origVertices);
@@ -170,6 +174,10 @@ public class DeformersController : CharaCustomFunctionController
                         continue;
                     }
                     if (renderer.sharedMesh == null)
+                    {
+                        continue;
+                    }
+                    if (!renderer.sharedMesh.isReadable)
                     {
                         continue;
                     }
@@ -642,7 +650,9 @@ public static class NormalSolver
                 // Calculate the normal of the triangle
                 Vector3 p1 = vertices[i2] - vertices[i1];
                 Vector3 p2 = vertices[i3] - vertices[i1];
-                Vector3 normal = Vector3.Cross(p1, p2).normalized;
+                Vector3 normal = Vector3.Cross(p1, p2); 
+                float magnitude = normal.magnitude;
+                if (magnitude > 0) normal /= magnitude;
                 int triIndex = i / 3;
                 triNormals[subMeshIndex][triIndex] = normal;
 
