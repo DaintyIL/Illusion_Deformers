@@ -138,6 +138,11 @@ public class DeformersController : CharaCustomFunctionController
         StartCoroutine(GetAllRenderers(true));
     }
 
+    protected override void OnCoordinateBeingLoaded(ChaFileCoordinate coordinate)
+    {
+        StartCoroutine(GetAllRenderers(false, true));
+    }
+
     public Mesh GetMesh(Component renderer)
     {
         if (renderer is SkinnedMeshRenderer skinnedMeshRenderer)
