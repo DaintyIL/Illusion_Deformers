@@ -17,7 +17,7 @@ using MessagePack;
 public class Deformers : BaseUnityPlugin
 {
     public const string GUID = "dainty.deformers";
-    public const string Version = "0.21";
+    public const string Version = "0.3";
     internal static new ManualLogSource Logger;
     void Awake()
     {
@@ -86,23 +86,24 @@ public class DeformersController : CharaCustomFunctionController
     {
         PluginData deformData = new PluginData();
 
-        foreach (SkinnedMeshRenderer renderer in Renderers)
+        foreach (Component renderer in Renderers)
         {
             if (renderer == null)
             {
                 continue;
             }
-            if (renderer.sharedMesh == null)
+            Mesh sharedMesh = GetMesh(renderer);
+            if (sharedMesh == null)
             {
                 continue;
             }
-            if (!renderer.sharedMesh.isReadable)
+            if (!sharedMesh.isReadable)
             {
                 continue;
             }
             List<float[]> savedVertices = new List<float[]>();
-            renderer.sharedMesh.GetVertices(newVertices);
-            OrigMeshes[renderer.sharedMesh].GetVertices(origVertices);
+            sharedMesh.GetVertices(newVertices);
+            OrigMeshes[sharedMesh].GetVertices(origVertices);
             for (var j = 0; j < newVertices.Count; j++)
             {
                 if (newVertices[j] != origVertices[j])
@@ -113,11 +114,11 @@ public class DeformersController : CharaCustomFunctionController
 
             if (savedVertices.Count > 0)
             {
-                if (deformData.data.ContainsKey(renderer.sharedMesh.name + newVertices.Count))
+                if (deformData.data.ContainsKey(sharedMesh.name + newVertices.Count))
                 {
                     continue;
                 }
-                deformData.data.Add(renderer.sharedMesh.name + newVertices.Count, MessagePackSerializer.Serialize(savedVertices, MessagePack.Resolvers.ContractlessStandardResolver.Instance));
+                deformData.data.Add(sharedMesh.name + newVertices.Count, MessagePackSerializer.Serialize(savedVertices, MessagePack.Resolvers.ContractlessStandardResolver.Instance));
             }
         }
         deformData.version = 1;
@@ -136,29 +137,60 @@ public class DeformersController : CharaCustomFunctionController
         OrigMeshes = new Dictionary<Mesh, Mesh>();
         StartCoroutine(GetAllRenderers(true));
     }
+
+    public Mesh GetMesh(Component renderer)
+    {
+        if (renderer is SkinnedMeshRenderer skinnedMeshRenderer)
+        {
+            return skinnedMeshRenderer.sharedMesh;
+        }
+        if (renderer is MeshRenderer meshRenderer)
+        {
+            if (meshRenderer.material.name.StartsWith("Filter")) //dumb way of not deforming deformers
+            {
+                return null;
+            }
+            return meshRenderer.GetComponent<MeshFilter>().sharedMesh;
+        }
+        return null;
+    }
+
+    public void SetMesh(Component renderer, Mesh mesh)
+    {
+        if (renderer is SkinnedMeshRenderer skinnedMeshRenderer)
+        {
+            skinnedMeshRenderer.sharedMesh = mesh;
+        }
+        if (renderer is MeshRenderer meshRenderer)
+        {
+            meshRenderer.GetComponent<MeshFilter>().sharedMesh = mesh;
+        }
+    }
+
     public IEnumerator GetAllRenderers(bool reload = false, bool deform = false)
     {
         yield return new WaitForSeconds(0.5f); //renderers/meshes get replaced by plugins at some point, I tried hooking the load manually and setting priority to last, doesn't work. Something async I guess.
 
-        Renderers = transform.GetComponentsInChildren(typeof(SkinnedMeshRenderer), true);
-        foreach (SkinnedMeshRenderer renderer in Renderers)
+        Renderers = transform.GetComponentsInChildren(typeof(Renderer), true);
+        foreach (Component renderer in Renderers)
         {
-            if (renderer.sharedMesh == null)
+            Mesh sharedMesh = GetMesh(renderer);
+            if (sharedMesh == null)
             {
                 continue;
             }
-            if (OrigMeshes.ContainsKey(renderer.sharedMesh))
+            if (OrigMeshes.ContainsKey(sharedMesh))
             {
                 continue;
             }
-            Mesh copyMesh = Instantiate(renderer.sharedMesh);
-            OrigMeshes.Add(copyMesh, renderer.sharedMesh);
-            String name = renderer.sharedMesh.name;
-            renderer.sharedMesh = copyMesh;
-            renderer.sharedMesh.name = name;
-            if (!renderer.sharedMesh.isReadable)
+            Mesh copyMesh = Instantiate(sharedMesh);
+            OrigMeshes.Add(copyMesh, sharedMesh);
+            String name = sharedMesh.name;
+            copyMesh.name = name;
+            SetMesh(renderer, copyMesh);
+            if (!sharedMesh.isReadable)
             {
-                Deformers.Logger.LogWarning("Cannot deform " + renderer.sharedMesh.name + ", not read/write enabled.");
+                Deformers.Logger.LogWarning("Cannot deform " + sharedMesh.name + ", not read/write enabled.");
             }
         }
 
@@ -167,22 +199,23 @@ public class DeformersController : CharaCustomFunctionController
             PluginData deformData = GetExtendedData();
             if (deformData != null)
             {
-                foreach (SkinnedMeshRenderer renderer in Renderers)
+                foreach (Component renderer in Renderers)
                 {
                     if (renderer == null)
                     {
                         continue;
                     }
-                    if (renderer.sharedMesh == null)
+                    Mesh sharedMesh = GetMesh(renderer);
+                    if (sharedMesh == null)
                     {
                         continue;
                     }
-                    if (!renderer.sharedMesh.isReadable)
+                    if (!sharedMesh.isReadable)
                     {
                         continue;
                     }
-                    renderer.sharedMesh.GetVertices(newVertices);
-                    if (deformData.data.TryGetValue(renderer.sharedMesh.name + newVertices.Count, out object t))
+                    sharedMesh.GetVertices(newVertices);
+                    if (deformData.data.TryGetValue(sharedMesh.name + newVertices.Count, out object t))
                     {
                         List<float[]> savedVertices = MessagePackSerializer.Deserialize<List<float[]>>((byte[])t, MessagePack.Resolvers.ContractlessStandardResolver.Instance);
                         for (var i = 0; i < savedVertices.Count; i++)
@@ -191,7 +224,7 @@ public class DeformersController : CharaCustomFunctionController
                             newVertices[(int)savedVertex[0]] = new Vector3(savedVertex[1], savedVertex[2], savedVertex[3]);
                         }
 
-                        renderer.sharedMesh.SetVertices(newVertices);
+                        sharedMesh.SetVertices(newVertices);
                         lastDeform = Time.time;
                         if (CR_running == false)
                         {
@@ -215,70 +248,89 @@ public class DeformersController : CharaCustomFunctionController
             return;
         }
 
-        foreach (SkinnedMeshRenderer renderer in Renderers)
+        foreach (Component renderer in Renderers)
         {
             if (renderer == null)
             {
                 continue;
             }
-            if (renderer.sharedMesh == null)
+            Mesh sharedMesh = GetMesh(renderer);
+            if (sharedMesh == null)
             {
                 continue;
             }
-            if (!OrigMeshes.ContainsKey(renderer.sharedMesh))
+            if (!OrigMeshes.ContainsKey(sharedMesh))
             {
                 continue;
             }
-            if (!renderer.sharedMesh.isReadable)
+            if (!sharedMesh.isReadable)
             {
                 continue;
             }
-            OrigMeshes[renderer.sharedMesh].GetVertices(newVertices);
-            renderer.sharedMesh.SetVertices(newVertices);
+            OrigMeshes[sharedMesh].GetVertices(newVertices);
+            sharedMesh.SetVertices(newVertices);
 
             Transform parent = renderer.transform.parent;
-            renderer.transform.parent = null;
-
             Vector3 localScale = renderer.transform.localScale;
-            renderer.transform.localScale = Vector3.one;
 
-            Matrix4x4[] boneMatrices = new Matrix4x4[renderer.bones.Length];
-            BoneWeight[] boneWeights = renderer.sharedMesh.boneWeights;
-            Transform[] skinnedBones = renderer.bones;
-            Matrix4x4[] meshBindposes = renderer.sharedMesh.bindposes;
-
-            if (boneWeights.Length > 0)
+            Matrix4x4[] boneMatrices = null;
+            BoneWeight[] boneWeights = null;
+            if (renderer is SkinnedMeshRenderer skinnedMeshRenderer)
             {
-                renderer.BakeMesh(bakedMesh);
-                bakedMesh.GetVertices(bakedVertices);
-                for (int j = 0; j < boneMatrices.Length; j++)
+                renderer.transform.parent = null;
+                localScale = renderer.transform.localScale;
+                skinnedMeshRenderer.transform.localScale = Vector3.one;
+                boneMatrices = new Matrix4x4[skinnedMeshRenderer.bones.Length];
+                boneWeights = skinnedMeshRenderer.sharedMesh.boneWeights;
+                Transform[] skinnedBones = skinnedMeshRenderer.bones;
+                Matrix4x4[] meshBindposes = skinnedMeshRenderer.sharedMesh.bindposes;
+
+                if (boneWeights.Length > 0)
                 {
-                    if (skinnedBones[j] != null && meshBindposes[j] != null)
+                    skinnedMeshRenderer.BakeMesh(bakedMesh);
+                    bakedMesh.GetVertices(bakedVertices);
+                    for (int j = 0; j < boneMatrices.Length; j++)
                     {
-                        boneMatrices[j] = skinnedBones[j].localToWorldMatrix * meshBindposes[j];
+                        if (skinnedBones[j] != null && meshBindposes[j] != null)
+                        {
+                            boneMatrices[j] = skinnedBones[j].localToWorldMatrix * meshBindposes[j];
+                        }
+                        else
+                        {
+                            boneMatrices[j] = Matrix4x4.identity;
+                        }
                     }
-                    else
+                }
+                else
+                {
+                    bakedVertices = new List<Vector3>(newVertices);
+                    Transform rootBone = skinnedMeshRenderer.rootBone;
+                    for (int j = 0; j < bakedVertices.Count; j++)
                     {
-                        boneMatrices[j] = Matrix4x4.identity;
+                        bakedVertices[j] = rootBone.TransformPoint(bakedVertices[j]);
+                        bakedVertices[j] = skinnedMeshRenderer.transform.InverseTransformPoint(bakedVertices[j]);
                     }
                 }
             }
-            else
+            else if (renderer is MeshRenderer meshRenderer)
             {
                 bakedVertices = new List<Vector3>(newVertices);
-                Transform rootBone = renderer.rootBone;
                 for (int j = 0; j < bakedVertices.Count; j++)
                 {
-                    bakedVertices[j] = rootBone.TransformPoint(bakedVertices[j]);
-                    bakedVertices[j] = renderer.transform.InverseTransformPoint(bakedVertices[j]);
+                    bakedVertices[j] = meshRenderer.transform.TransformPoint(bakedVertices[j]);
                 }
+            }
+
+            else
+            {
+                continue;
             }
 
             foreach (Deformer deformer in DeformerList)
             {
                 if (deformer.FilterMaterial.shader.name != "Standard")
                 {
-                    foreach (Material material in renderer.materials)
+                    foreach (Material material in ((Renderer)renderer).materials)
                     {
                         if (material.shader.name == deformer.FilterMaterial.shader.name)
                         {
@@ -294,7 +346,7 @@ public class DeformersController : CharaCustomFunctionController
             }
             renderer.transform.localScale = localScale;
             renderer.transform.parent = parent;
-            renderer.sharedMesh.SetVertices(newVertices);
+            sharedMesh.SetVertices(newVertices);
         }
         lastDeform = Time.time;
         if (CR_running == false)
@@ -308,22 +360,23 @@ public class DeformersController : CharaCustomFunctionController
         CR_running = true;
         yield return new WaitUntil(() => (Time.time - lastDeform) >= 1);
 
-        foreach (SkinnedMeshRenderer renderer in Renderers)
+        foreach (Component renderer in Renderers)
         {
             if (renderer == null)
             {
                 continue;
             }
-            if (renderer.sharedMesh == null)
+            Mesh sharedMesh = GetMesh(renderer);
+            if (sharedMesh == null)
             {
                 continue;
             }
-            if (!renderer.sharedMesh.isReadable)
+            if (!sharedMesh.isReadable)
             {
                 continue;
             }
-            NormalSolver.RecalculateNormals(renderer.sharedMesh, 50f);
-            renderer.sharedMesh.RecalculateTangents();
+            NormalSolver.RecalculateNormals(sharedMesh, 50f);
+            sharedMesh.RecalculateTangents();
         }
 
         CR_running = false;
@@ -369,6 +422,11 @@ public abstract class Deformer : MonoBehaviour
     public int AccessoryIndex { get; internal set; }
     public Material FilterMaterial { get; internal set; }
     public string oldShaderName { get; internal set; }
+    public float radius = 1.09f;
+    public float falloff = 1;
+    public float strength = 0.2f;
+    public Vector3 point1;
+    public Vector3 point2;
 
     void Start()
     {
@@ -470,6 +528,11 @@ public abstract class Deformer : MonoBehaviour
     public Vector3 BakedToNewVertex(Vector3 bakedVertex, Component renderer, Matrix4x4[] boneMatrices, BoneWeight[] boneWeights, int index)
     {
         Vector3 newVertex;
+        if (boneWeights == null)
+        {
+            newVertex = renderer.transform.InverseTransformPoint(bakedVertex);
+            return newVertex;
+        }
         if (boneWeights.Length > 0)
         {
             BoneWeight weight = boneWeights[index];
@@ -483,14 +546,8 @@ public abstract class Deformer : MonoBehaviour
         }
         return newVertex;
     }
-}
 
-public class Squeezer : Deformer
-{
-    public float radius = 1.09f;
-    public float falloff = 1;
-    public float strength = 0.2f;
-    public override void Deform(Component renderer, List<Vector3> newVertices, List<Vector3> bakedVertices, Matrix4x4[] boneMatrices, BoneWeight[] boneWeights)
+    public void SetDeformParams()
     {
         radius = N1.localScale.x / 2;
         strength = N2.localScale.x;
@@ -503,9 +560,27 @@ public class Squeezer : Deformer
         {
             strength = 0f;
         }
+    }
 
-        Vector3 point1 = renderer.transform.InverseTransformPoint(N1.position);
-        Vector3 point2 = renderer.transform.InverseTransformPoint(N2.position);
+    public void SetPoints(Component renderer)
+    {
+        point1 = N1.position;
+        point2 = N2.position;
+        if (renderer is SkinnedMeshRenderer skinnedMeshRenderer)
+        {
+            point1 = skinnedMeshRenderer.transform.InverseTransformPoint(point1);
+            point2 = skinnedMeshRenderer.transform.InverseTransformPoint(point2);
+        }
+    }
+}
+
+public class Squeezer : Deformer
+{
+
+    public override void Deform(Component renderer, List<Vector3> newVertices, List<Vector3> bakedVertices, Matrix4x4[] boneMatrices, BoneWeight[] boneWeights)
+    {
+        SetDeformParams();
+        SetPoints(renderer);
 
         for (var j = 0; j < bakedVertices.Count; j++)
         {
@@ -518,30 +593,14 @@ public class Squeezer : Deformer
             }
         }
     }
-
 }
 
 public class Bulger : Deformer
 {
-    public float radius = 1.09f;
-    public float falloff = 1;
-    public float strength = 0.2f;
     public override void Deform(Component renderer, List<Vector3> newVertices, List<Vector3> bakedVertices, Matrix4x4[] boneMatrices, BoneWeight[] boneWeights)
     {
-        radius = N1.localScale.x / 2;
-        strength = N2.localScale.x;
-        falloff = N2.localScale.y;
-        if (falloff == 0.01f)
-        {
-            falloff = 0f;
-        }
-        if (strength == 0.01f)
-        {
-            strength = 0f;
-        }
-
-        Vector3 point1 = renderer.transform.InverseTransformPoint(N1.position);
-        Vector3 point2 = renderer.transform.InverseTransformPoint(N2.position);
+        SetDeformParams();
+        SetPoints(renderer);
 
         for (var j = 0; j < bakedVertices.Count; j++)
         {
@@ -559,34 +618,19 @@ public class Bulger : Deformer
 
 public class Mover : Deformer
 {
-    public float radius = 1.09f;
-    public float falloff = 1;
-    public float strength = 0.2f;
     public override void Deform(Component renderer, List<Vector3> newVertices, List<Vector3> bakedVertices, Matrix4x4[] boneMatrices, BoneWeight[] boneWeights)
     {
-        radius = N1.localScale.x / 2;
-        strength = N2.localScale.x;
-        falloff = N2.localScale.y;
-        if (falloff == 0.01f)
-        {
-            falloff = 0f;
-        }
-        if (strength == 0.01f)
-        {
-            strength = 0f;
-        }
+        SetDeformParams();
+        SetPoints(renderer);
 
-        Vector3 point1 = renderer.transform.InverseTransformPoint(N1.position);
-        Vector3 point2 = renderer.transform.InverseTransformPoint(N2.position);
         Vector3 moveVector = point2 - point1;
-        float factor;
         for (var j = 0; j < bakedVertices.Count; j++)
         {
             float distance = Vector3.Distance(bakedVertices[j], point1);
             if (distance < radius)
             {
                 Vector3 newPoint = bakedVertices[j] + moveVector;
-                factor = 1 - ((distance / radius) * falloff);
+                float factor = 1 - ((distance / radius) * falloff);
                 bakedVertices[j] = Vector3.Lerp(bakedVertices[j], newPoint, strength * factor);
                 newVertices[j] = BakedToNewVertex(bakedVertices[j], renderer, boneMatrices, boneWeights, j);
             }
@@ -650,7 +694,7 @@ public static class NormalSolver
                 // Calculate the normal of the triangle
                 Vector3 p1 = vertices[i2] - vertices[i1];
                 Vector3 p2 = vertices[i3] - vertices[i1];
-                Vector3 normal = Vector3.Cross(p1, p2); 
+                Vector3 normal = Vector3.Cross(p1, p2);
                 float magnitude = normal.magnitude;
                 if (magnitude > 0) normal /= magnitude;
                 int triIndex = i / 3;
