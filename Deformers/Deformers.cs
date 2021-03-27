@@ -1,23 +1,24 @@
 ﻿using AIChara;
 using BepInEx;
 using BepInEx.Logging;
+using ExtensibleSaveFormat;
 using HarmonyLib;
 using KKAPI;
 using KKAPI.Chara;
-using System;
-using System.Collections.Generic;
-using UnityEngine;
 using KKAPI.Maker;
-using System.Collections;
-using ExtensibleSaveFormat;
 using MessagePack;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Reflection;
+using UnityEngine;
 
 [BepInDependency(KoikatuAPI.GUID, KoikatuAPI.VersionConst)]
 [BepInPlugin(GUID, "Deformers", Version)]
 public class Deformers : BaseUnityPlugin
 {
     public const string GUID = "dainty.deformers";
-    public const string Version = "0.3";
+    public const string Version = "0.31";
     internal static new ManualLogSource Logger;
     void Awake()
     {
@@ -81,7 +82,20 @@ public class DeformersController : CharaCustomFunctionController
     private float lastDeform;
     private bool CR_running = false;
     List<Vector3> origVertices = new List<Vector3>();
-
+    private string GetPartialHierarchyPath(Transform transform)
+    {
+        string path = transform.name;
+        while (true)
+        {
+            if (transform.parent == null || transform.parent == this.transform)
+            {
+                break;
+            }
+            transform = transform.parent;
+            path = transform.name + "/" + path;
+        }
+        return path;
+    }
     protected override void OnCardBeingSaved(GameMode currentGameMode)
     {
         PluginData deformData = new PluginData();
@@ -94,6 +108,10 @@ public class DeformersController : CharaCustomFunctionController
             }
             Mesh sharedMesh = GetMesh(renderer);
             if (sharedMesh == null)
+            {
+                continue;
+            }
+            if (!OrigMeshes.ContainsKey(sharedMesh))
             {
                 continue;
             }
@@ -114,11 +132,11 @@ public class DeformersController : CharaCustomFunctionController
 
             if (savedVertices.Count > 0)
             {
-                if (deformData.data.ContainsKey(sharedMesh.name + newVertices.Count))
+                if (deformData.data.ContainsKey(GetPartialHierarchyPath(renderer.transform) + newVertices.Count))
                 {
                     continue;
                 }
-                deformData.data.Add(sharedMesh.name + newVertices.Count, MessagePackSerializer.Serialize(savedVertices, MessagePack.Resolvers.ContractlessStandardResolver.Instance));
+                deformData.data.Add(GetPartialHierarchyPath(renderer.transform) + newVertices.Count, MessagePackSerializer.Serialize(savedVertices, MessagePack.Resolvers.ContractlessStandardResolver.Instance));
             }
         }
         deformData.version = 1;
@@ -165,11 +183,37 @@ public class DeformersController : CharaCustomFunctionController
         if (renderer is SkinnedMeshRenderer skinnedMeshRenderer)
         {
             skinnedMeshRenderer.sharedMesh = mesh;
+            if (skinnedMeshRenderer.gameObject.GetComponent<Cloth>() != null)
+            {
+                CopyCloth(skinnedMeshRenderer.gameObject);
+            }
         }
         if (renderer is MeshRenderer meshRenderer)
         {
             meshRenderer.GetComponent<MeshFilter>().sharedMesh = mesh;
         }
+    }
+    public static void CopyCloth(GameObject renderer) //cloth component bugs out if you replace the mesh and then disable and enable the gameobject
+    {
+        GameObject copy = Instantiate(renderer.gameObject);
+        Cloth clothCopy = copy.gameObject.GetComponent<Cloth>();
+
+        DestroyImmediate(renderer.gameObject.GetComponent<Cloth>());
+        Cloth clothOrig = renderer.AddComponent<Cloth>();
+
+        string name = renderer.name;
+        clothOrig.transform.parent.gameObject.SetActive(true);
+        clothOrig.gameObject.SetActive(true);
+        foreach (PropertyInfo x in typeof(Cloth).GetProperties())
+        {
+            if (x.CanWrite)
+                x.SetValue(clothOrig, x.GetValue(clothCopy));
+        }
+        clothOrig.clothSolverFrequency = clothCopy.clothSolverFrequency;
+        renderer.name = name;
+
+        copy.SetActive(false);
+        Destroy(copy);
     }
 
     public IEnumerator GetAllRenderers(bool reload = false, bool deform = false)
@@ -189,14 +233,15 @@ public class DeformersController : CharaCustomFunctionController
                 continue;
             }
             Mesh copyMesh = Instantiate(sharedMesh);
+            if (!sharedMesh.isReadable)
+            {
+                Deformers.Logger.LogWarning("Cannot deform " + sharedMesh.name + ", not read/write enabled.");
+                copyMesh = sharedMesh;
+            }
             OrigMeshes.Add(copyMesh, sharedMesh);
             String name = sharedMesh.name;
             copyMesh.name = name;
             SetMesh(renderer, copyMesh);
-            if (!sharedMesh.isReadable)
-            {
-                Deformers.Logger.LogWarning("Cannot deform " + sharedMesh.name + ", not read/write enabled.");
-            }
         }
 
         if (reload)
@@ -220,7 +265,7 @@ public class DeformersController : CharaCustomFunctionController
                         continue;
                     }
                     sharedMesh.GetVertices(newVertices);
-                    if (deformData.data.TryGetValue(sharedMesh.name + newVertices.Count, out object t))
+                    if (deformData.data.TryGetValue(GetPartialHierarchyPath(renderer.transform) + newVertices.Count, out object t))
                     {
                         List<float[]> savedVertices = MessagePackSerializer.Deserialize<List<float[]>>((byte[])t, MessagePack.Resolvers.ContractlessStandardResolver.Instance);
                         for (var i = 0; i < savedVertices.Count; i++)
