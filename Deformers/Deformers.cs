@@ -76,12 +76,15 @@ public class DeformersController : CharaCustomFunctionController
     public Component[] Renderers { get; private set; }
     public Dictionary<Mesh, Mesh> OrigMeshes { get; private set; }
     public List<Deformer> DeformerList { get; set; }
+    List<Vector3> origVertices = new List<Vector3>();
     List<Vector3> newVertices = new List<Vector3>();
     List<Vector3> bakedVertices = new List<Vector3>();
     Mesh bakedMesh = new Mesh();
     private float lastDeform;
     private bool CR_running = false;
-    List<Vector3> origVertices = new List<Vector3>();
+    private bool loaded = false;
+    private float loadedTime = 0f;
+
     private string GetPartialHierarchyPath(Transform transform)
     {
         string path = transform.name;
@@ -153,6 +156,7 @@ public class DeformersController : CharaCustomFunctionController
     protected override void OnReload(GameMode currentGameMode, bool maintainState)
     {
         OrigMeshes = new Dictionary<Mesh, Mesh>();
+        loaded = false;
         StartCoroutine(GetAllRenderers(true));
     }
 
@@ -283,6 +287,8 @@ public class DeformersController : CharaCustomFunctionController
                     }
                 }
             }
+            loaded = true;
+            loadedTime = Time.time;
         }
 
         if (deform)
@@ -293,6 +299,13 @@ public class DeformersController : CharaCustomFunctionController
 
     public void DeformAll()
     {
+        if(loaded == false)
+        {
+            return;
+        }
+        if((Time.time - loadedTime) < 1){
+            return;
+        }
         if (DeformerList == null || Renderers == null)
         {
             return;
