@@ -203,15 +203,24 @@ public class DeformersController : CharaCustomFunctionController
     }
     public static void CopyCloth(GameObject renderer) //cloth component bugs out if you replace the mesh and then disable and enable the gameobject
     {
-        GameObject copy = Instantiate(renderer.gameObject);
-        Cloth clothCopy = copy.gameObject.GetComponent<Cloth>();
+        GameObject copy = Instantiate(renderer);
+        Cloth clothCopy = copy.GetComponent<Cloth>();
 
-        DestroyImmediate(renderer.gameObject.GetComponent<Cloth>());
+        DestroyImmediate(renderer.GetComponent<Cloth>());
         Cloth clothOrig = renderer.AddComponent<Cloth>();
 
         string name = renderer.name;
-        clothOrig.transform.parent.gameObject.SetActive(true);
-        clothOrig.gameObject.SetActive(true);
+
+        Transform ancestor = clothOrig.transform;
+        while (ancestor.parent != null)
+        {
+            ancestor = ancestor.parent;
+            ancestor.gameObject.SetActive(true);
+            if (clothOrig.gameObject.activeInHierarchy == true)
+            {
+                break;
+            }
+        }
         foreach (PropertyInfo x in typeof(Cloth).GetProperties())
         {
             if (x.CanWrite)
@@ -867,6 +876,70 @@ public class Mover : Deformer
             nativeboneMatrices = nativeboneMatrices,
             moveVector = point2 - point1,
             skinned = skinned
+        };
+
+        JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
+        JobHandle.ScheduleBatchedJobs();
+        jobHandle.Complete();
+    }
+}
+
+public class Rotator : Deformer
+{
+    [BurstCompile]
+    public struct DeformJob : IJobParallelFor
+    {
+        public float radius;
+        public float falloff;
+        public float strength;
+        public NativeArray<Vector3> nativeNewVertices;
+        public NativeArray<Vector3> nativeBakedVertices;
+        public Vector3 point1;
+        public Vector3 point2;
+        public NativeArray<Matrix4x4> nativeboneMatrices;
+        public NativeArray<BoneWeight> nativeBoneWeights;
+        public Matrix4x4 RendererWorldToLocalMatrix;
+        public Matrix4x4 RendererLocalToWorldMatrix;
+        public Matrix4x4 RootBoneWorldToLocalMatrix;
+        public Vector3 moveVector;
+        public bool skinned;
+        public Quaternion rotation;
+
+        public void Execute(int index)
+        {
+            float distance = Vector3.Distance(nativeBakedVertices[index], point1);
+            if (distance < radius)
+            {
+                Vector3 newPoint = point2 + (rotation * (nativeBakedVertices[index] - point2));
+                float factor = 1 - ((distance / radius) * falloff);
+                nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
+                nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+            }
+        }
+    }
+
+    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned)
+    {
+        SetDeformParams();
+        SetPoints(RendererWorldToLocalMatrix, skinned);
+
+        DeformJob deformJob = new DeformJob
+        {
+            nativeNewVertices = nativeNewVertices,
+            nativeBakedVertices = nativeBakedVertices,
+            radius = radius,
+            falloff = falloff,
+            strength = strength,
+            point1 = point1,
+            point2 = point2,
+            RendererLocalToWorldMatrix = RendererLocalToWorldMatrix,
+            RendererWorldToLocalMatrix = RendererWorldToLocalMatrix,
+            RootBoneWorldToLocalMatrix = RootBoneWorldToLocalMatrix,
+            nativeBoneWeights = nativeBoneWeights,
+            nativeboneMatrices = nativeboneMatrices,
+            moveVector = point2 - point1,
+            skinned = skinned,
+            rotation = N2.localRotation
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
