@@ -445,6 +445,10 @@ public class DeformersController : CharaCustomFunctionController
 
             foreach (Deformer deformer in DeformerList)
             {
+                if (!deformer.gameObject.activeInHierarchy)
+                {
+                    continue;
+                }
                 if (deformer.FilterMaterial.shader.name != "Standard")
                 {
                     foreach (Material material in ((Renderer)renderer).materials)
@@ -587,6 +591,20 @@ public abstract class Deformer : MonoBehaviour
     {
         deformersController.RemoveDeformer(this);
     }
+
+    void OnDisable()
+    {
+        deformersController.DeformAll();
+    }
+
+    void OnEnable()
+    {
+        if(deformersController != null)
+        {
+            deformersController.DeformAll();
+        }
+    }
+
     void LateUpdate()
     {
         if (N1.localScale != oldN1Scale)
