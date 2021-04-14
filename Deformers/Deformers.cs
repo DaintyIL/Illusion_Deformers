@@ -84,8 +84,6 @@ public class DeformersController : CharaCustomFunctionController
     List<Vector3> newVertices = new List<Vector3>();
     List<Vector3> bakedVertices = new List<Vector3>();
     Mesh bakedMesh = new Mesh();
-    private float lastDeform;
-    private bool CR_running = false;
     private bool loaded = false;
     private float loadedTime = 0f;
     private List<Vector3> normals = new List<Vector3>();
@@ -408,6 +406,8 @@ public class DeformersController : CharaCustomFunctionController
 
             OrigMeshes[sharedMesh].GetVertices(newVertices);
             sharedMesh.SetVertices(newVertices);
+            OrigMeshes[sharedMesh].GetNormals(normals);
+            sharedMesh.SetNormals(normals);
 
             bool skip = true;
             foreach (Deformer deformer in DeformerList)
@@ -503,7 +503,8 @@ public class DeformersController : CharaCustomFunctionController
             }
 
             NativeArray<Vector3> nativeBakedVertices = new NativeArray<Vector3>(bakedVertices.ToArray(), Allocator.Temp);
-
+            NativeArray<bool> deformed = new NativeArray<bool>(1, Allocator.Temp);
+            deformed[0] = false;
             foreach (Deformer deformer in DeformerList)
             {
                 if (!deformer.gameObject.activeInHierarchy)
@@ -512,26 +513,29 @@ public class DeformersController : CharaCustomFunctionController
                 }
                 if (deformer.FilterMaterial.shader.name != "Standard")
                 {
-                    foreach (Material material in ((Renderer)renderer).materials)
+                    foreach (Material material in (renderer).materials)
                     {
                         if (material.shader.name == deformer.FilterMaterial.shader.name)
                         {
-                            deformer.Deform(nativeNewVertices, nativeBakedVertices, nativeboneMatrices, nativeBoneWeights, rendererTransform.localToWorldMatrix, rendererTransform.worldToLocalMatrix, rootBoneWorldToLocalMatrix, skinned);
+                            deformer.Deform(nativeNewVertices, nativeBakedVertices, nativeboneMatrices, nativeBoneWeights, rendererTransform.localToWorldMatrix, rendererTransform.worldToLocalMatrix, rootBoneWorldToLocalMatrix, skinned, deformed);
                             break;
                         }
                     }
                 }
                 else
                 {
-                    deformer.Deform(nativeNewVertices, nativeBakedVertices, nativeboneMatrices, nativeBoneWeights, rendererTransform.localToWorldMatrix, rendererTransform.worldToLocalMatrix, rootBoneWorldToLocalMatrix, skinned);
+                    deformer.Deform(nativeNewVertices, nativeBakedVertices, nativeboneMatrices, nativeBoneWeights, rendererTransform.localToWorldMatrix, rendererTransform.worldToLocalMatrix, rootBoneWorldToLocalMatrix, skinned, deformed);
                 }
             }
 
-            newVertices.Clear();
-            newVertices.AddRange(nativeNewVertices);
-
             rendererTransform.localScale = localScale;
             rendererTransform.parent = parent;
+            if (!deformed[0])
+            {
+                continue;
+            }
+            newVertices.Clear();
+            newVertices.AddRange(nativeNewVertices);
             sharedMesh.SetVertices(newVertices);
 
             sharedMesh.RecalculateNormals();
@@ -728,7 +732,7 @@ public abstract class Deformer : MonoBehaviour
         oldShaderName = FilterMaterial.shader.name;
     }
 
-    public abstract void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeBoneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned);
+    public abstract void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeBoneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed);
 
     public static Matrix4x4 GetReverseSkinningMatrix(NativeArray<Matrix4x4> boneMatrices, BoneWeight weight)
     {
@@ -828,12 +832,14 @@ public class Squeezer : Deformer
         public Matrix4x4 RendererLocalToWorldMatrix;
         public Matrix4x4 RootBoneWorldToLocalMatrix;
         public bool skinned;
+        public NativeArray<bool> deformed;
 
         public void Execute(int index)
         {
             float distance = Vector3.Distance(nativeBakedVertices[index], point1);
             if (distance < radius)
             {
+                deformed[0] = true;
                 float factor = 1 - ((distance / radius) * falloff);
                 nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], point2, strength * factor);
                 nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
@@ -841,7 +847,7 @@ public class Squeezer : Deformer
         }
     }
 
-    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned)
+    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed)
     {
         SetDeformParams();
         SetPoints(RendererWorldToLocalMatrix, skinned);
@@ -860,7 +866,8 @@ public class Squeezer : Deformer
             RootBoneWorldToLocalMatrix = RootBoneWorldToLocalMatrix,
             nativeBoneWeights = nativeBoneWeights,
             nativeboneMatrices = nativeboneMatrices,
-            skinned = skinned
+            skinned = skinned,
+            deformed = deformed
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
@@ -887,12 +894,14 @@ public class Bulger : Deformer
         public Matrix4x4 RendererLocalToWorldMatrix;
         public Matrix4x4 RootBoneWorldToLocalMatrix;
         public bool skinned;
+        public NativeArray<bool> deformed;
 
         public void Execute(int index)
         {
             float distance = Vector3.Distance(nativeBakedVertices[index], point1);
             if (distance < radius)
             {
+                deformed[0] = true;
                 Vector3 newPoint = nativeBakedVertices[index] + (nativeBakedVertices[index] - point2);
                 float factor = 1 - ((distance / radius) * falloff);
                 nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
@@ -901,7 +910,7 @@ public class Bulger : Deformer
         }
     }
 
-    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned)
+    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed)
     {
         SetDeformParams();
         SetPoints(RendererWorldToLocalMatrix, skinned);
@@ -920,7 +929,8 @@ public class Bulger : Deformer
             RootBoneWorldToLocalMatrix = RootBoneWorldToLocalMatrix,
             nativeBoneWeights = nativeBoneWeights,
             nativeboneMatrices = nativeboneMatrices,
-            skinned = skinned
+            skinned = skinned,
+            deformed = deformed
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
@@ -947,12 +957,14 @@ public class Mover : Deformer
         public Matrix4x4 RootBoneWorldToLocalMatrix;
         public Vector3 moveVector;
         public bool skinned;
+        public NativeArray<bool> deformed;
 
         public void Execute(int index)
         {
             float distance = Vector3.Distance(nativeBakedVertices[index], point1);
             if (distance < radius)
             {
+                deformed[0] = true;
                 Vector3 newPoint = nativeBakedVertices[index] + moveVector;
                 float factor = 1 - ((distance / radius) * falloff);
                 nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
@@ -961,7 +973,7 @@ public class Mover : Deformer
         }
     }
 
-    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned)
+    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed)
     {
         SetDeformParams();
         SetPoints(RendererWorldToLocalMatrix, skinned);
@@ -981,7 +993,8 @@ public class Mover : Deformer
             nativeBoneWeights = nativeBoneWeights,
             nativeboneMatrices = nativeboneMatrices,
             moveVector = point2 - point1,
-            skinned = skinned
+            skinned = skinned,
+            deformed = deformed
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
@@ -1009,12 +1022,14 @@ public class Rotator : Deformer
         public Vector3 moveVector;
         public bool skinned;
         public Quaternion rotation;
+        public NativeArray<bool> deformed;
 
         public void Execute(int index)
         {
             float distance = Vector3.Distance(nativeBakedVertices[index], point1);
             if (distance < radius)
             {
+                deformed[0] = true;
                 Vector3 newPoint = point2 + (rotation * (nativeBakedVertices[index] - point2));
                 float factor = 1 - ((distance / radius) * falloff);
                 nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
@@ -1023,7 +1038,7 @@ public class Rotator : Deformer
         }
     }
 
-    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned)
+    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed)
     {
         SetDeformParams();
         SetPoints(RendererWorldToLocalMatrix, skinned);
@@ -1044,7 +1059,8 @@ public class Rotator : Deformer
             nativeboneMatrices = nativeboneMatrices,
             moveVector = point2 - point1,
             skinned = skinned,
-            rotation = N2.localRotation
+            rotation = N2.localRotation,
+            deformed = deformed
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
