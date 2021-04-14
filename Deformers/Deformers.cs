@@ -89,6 +89,11 @@ public class DeformersController : CharaCustomFunctionController
     private bool loaded = false;
     private float loadedTime = 0f;
     private List<Vector3> normals = new List<Vector3>();
+    private List<Vector3> newNormals = new List<Vector3>();
+    public Dictionary<Mesh, Quaternion[]> NormalDiffs { get; set; }
+
+    public Dictionary<Mesh, int[]> DuplicateVectors { get; set; }
+    public Dictionary<Mesh, NativeArray<Vector3>> ResultList = new Dictionary<Mesh, NativeArray<Vector3>>();
 
     private string GetPartialHierarchyPath(Transform transform)
     {
@@ -161,6 +166,8 @@ public class DeformersController : CharaCustomFunctionController
     protected override void OnReload(GameMode currentGameMode, bool maintainState)
     {
         OrigMeshes = new Dictionary<Mesh, Mesh>();
+        NormalDiffs = new Dictionary<Mesh, Quaternion[]>();
+        DuplicateVectors = new Dictionary<Mesh, int[]>();
         loaded = false;
         StartCoroutine(GetAllRenderers(true));
     }
@@ -260,6 +267,34 @@ public class DeformersController : CharaCustomFunctionController
             String name = sharedMesh.name;
             copyMesh.name = name;
             SetMesh(renderer, copyMesh);
+
+            copyMesh.GetNormals(normals);
+            copyMesh.RecalculateNormals();
+            copyMesh.GetNormals(newNormals);
+            Quaternion[] normalDiffs = new Quaternion[newNormals.Count];
+            for (int i = 0; i < normals.Count; i++)
+            {
+                normalDiffs[i] = Quaternion.FromToRotation(newNormals[i], normals[i]);
+            }
+            NormalDiffs.Add(copyMesh, normalDiffs);
+            copyMesh.SetNormals(normals);
+
+            Dictionary<Vector3, int> duplicateCheck = new Dictionary<Vector3, int>();
+            sharedMesh.GetVertices(origVertices);
+            int[] duplicates = new int[origVertices.Count];
+            for (int i = 0; i < origVertices.Count; i++)
+            {
+                if (duplicateCheck.ContainsKey(origVertices[i]))
+                {
+                    duplicates[i] = duplicateCheck[origVertices[i]];
+                }
+                else
+                {
+                    duplicateCheck.Add(origVertices[i], i);
+                }
+            }
+            DuplicateVectors.Add(copyMesh, duplicates);
+
         }
 
         if (reload)
@@ -293,11 +328,35 @@ public class DeformersController : CharaCustomFunctionController
                         }
 
                         sharedMesh.SetVertices(newVertices);
-                        lastDeform = Time.time;
-                        if (CR_running == false)
+
+                        sharedMesh.RecalculateNormals();
+                        sharedMesh.GetNormals(newNormals);
+                        NativeArray<Vector3> nativeNewNormals = new NativeArray<Vector3>(newNormals.ToArray(), Allocator.Temp);
+                        NativeArray<Vector3> nativeReadOnlyNewNormals = new NativeArray<Vector3>(nativeNewNormals, Allocator.Temp);
+                        Quaternion[] normalDiffs = NormalDiffs[sharedMesh];
+                        NativeArray<Quaternion> nativeNormalDiffs = new NativeArray<Quaternion>(normalDiffs, Allocator.Temp);
+                        int[] duplicates = DuplicateVectors[sharedMesh];
+                        NativeArray<int> nativeDuplicates = new NativeArray<int>(duplicates, Allocator.Temp);
+
+                        NormalDiffsJob normalDiffsJob = new NormalDiffsJob
                         {
-                            StartCoroutine(RecalculateMeshes());
-                        }
+                            nativeNewNormals = nativeNewNormals,
+                            nativeReadOnlyNewNormals = nativeReadOnlyNewNormals,
+                            nativeNormalDiffs = nativeNormalDiffs
+                        };
+                        JobHandle diffsHandle = normalDiffsJob.Schedule(nativeNewNormals.Length, 32);
+
+                        DuplicatesJob duplicatesJob = new DuplicatesJob
+                        {
+                            nativeNewNormals = nativeNewNormals,
+                            nativeReadOnlyNewNormals = nativeReadOnlyNewNormals,
+                            nativeDuplicates = nativeDuplicates
+                        };
+                        JobHandle duplicatesHandle = duplicatesJob.Schedule(nativeNewNormals.Length, 32, diffsHandle);
+                        duplicatesHandle.Complete();
+                        newNormals.Clear();
+                        newNormals.AddRange(nativeNewNormals);
+                        sharedMesh.SetNormals(newNormals);
                     }
                 }
             }
@@ -325,9 +384,10 @@ public class DeformersController : CharaCustomFunctionController
         {
             return;
         }
+        NativeArray<JobHandle> HandeList = new NativeArray<JobHandle>(Renderers.Length, Allocator.Temp);
+        for (int i = 0; i < Renderers.Length; i++) {
 
-        foreach (Component renderer in Renderers)
-        {
+            Renderer renderer = (Renderer)Renderers[i];
             if (renderer == null)
             {
                 continue;
@@ -378,7 +438,7 @@ public class DeformersController : CharaCustomFunctionController
 
             Matrix4x4[] boneMatrices = null;
             BoneWeight[] boneWeights = null;
-            NativeArray<Vector3> nativeNewVertices = new NativeArray<Vector3>(newVertices.ToArray(), Allocator.TempJob);
+            NativeArray<Vector3> nativeNewVertices = new NativeArray<Vector3>(newVertices.ToArray(), Allocator.Temp);
             NativeArray<Matrix4x4> nativeboneMatrices = default;
             NativeArray<BoneWeight> nativeBoneWeights = default;
 
@@ -414,8 +474,8 @@ public class DeformersController : CharaCustomFunctionController
                             boneMatrices[j] = Matrix4x4.identity;
                         }
                     }
-                    nativeboneMatrices = new NativeArray<Matrix4x4>(boneMatrices, Allocator.TempJob);
-                    nativeBoneWeights = new NativeArray<BoneWeight>(boneWeights, Allocator.TempJob);
+                    nativeboneMatrices = new NativeArray<Matrix4x4>(boneMatrices, Allocator.Temp);
+                    nativeBoneWeights = new NativeArray<BoneWeight>(boneWeights, Allocator.Temp);
                 }
                 else
                 {
@@ -442,7 +502,7 @@ public class DeformersController : CharaCustomFunctionController
                 continue;
             }
 
-            NativeArray<Vector3> nativeBakedVertices = new NativeArray<Vector3>(bakedVertices.ToArray(), Allocator.TempJob);
+            NativeArray<Vector3> nativeBakedVertices = new NativeArray<Vector3>(bakedVertices.ToArray(), Allocator.Temp);
 
             foreach (Deformer deformer in DeformerList)
             {
@@ -469,51 +529,76 @@ public class DeformersController : CharaCustomFunctionController
 
             newVertices.Clear();
             newVertices.AddRange(nativeNewVertices);
-            nativeNewVertices.Dispose();
-            nativeBakedVertices.Dispose();
-            nativeBoneWeights.Dispose();
-            nativeboneMatrices.Dispose();
 
             rendererTransform.localScale = localScale;
             rendererTransform.parent = parent;
             sharedMesh.SetVertices(newVertices);
+
+            sharedMesh.RecalculateNormals();
+            sharedMesh.GetNormals(newNormals);
+            NativeArray<Vector3> nativeNewNormals = new NativeArray<Vector3>(newNormals.ToArray(), Allocator.Temp);
+            NativeArray<Vector3> nativeReadOnlyNewNormals = new NativeArray<Vector3>(nativeNewNormals, Allocator.Temp);
+            Quaternion[] normalDiffs = NormalDiffs[sharedMesh];
+            NativeArray<Quaternion> nativeNormalDiffs = new NativeArray<Quaternion>(normalDiffs, Allocator.Temp);
+            int[] duplicates = DuplicateVectors[sharedMesh];
+            NativeArray<int> nativeDuplicates = new NativeArray<int>(duplicates, Allocator.Temp);
+
+            NormalDiffsJob normalDiffsJob = new NormalDiffsJob
+            {
+                nativeNewNormals = nativeNewNormals,
+                nativeReadOnlyNewNormals = nativeReadOnlyNewNormals,
+                nativeNormalDiffs = nativeNormalDiffs
+            };
+            JobHandle diffsHandle = normalDiffsJob.Schedule(nativeNewNormals.Length, 32);
+
+            DuplicatesJob duplicatesJob = new DuplicatesJob
+            {
+                nativeNewNormals = nativeNewNormals,
+                nativeReadOnlyNewNormals = nativeReadOnlyNewNormals,
+                nativeDuplicates = nativeDuplicates
+            };
+            JobHandle duplicatesHandle = duplicatesJob.Schedule(nativeNewNormals.Length, 32, diffsHandle);
+            HandeList[i] = duplicatesHandle;
+            ResultList.Add(sharedMesh, nativeNewNormals);
         }
-        lastDeform = Time.time;
-        if (CR_running == false)
+        JobHandle.CompleteAll(HandeList);
+        foreach (KeyValuePair<Mesh, NativeArray<Vector3>> result in ResultList)
         {
-            StartCoroutine(RecalculateMeshes());
+            newNormals.Clear();
+            newNormals.AddRange(result.Value);
+            result.Key.SetNormals(newNormals);
+        }
+        ResultList.Clear();
+    }
+
+    [BurstCompile]
+    public struct NormalDiffsJob : IJobParallelFor
+    {
+        public NativeArray<Vector3> nativeNewNormals;
+        public NativeArray<Vector3> nativeReadOnlyNewNormals;
+        public NativeArray<Quaternion> nativeNormalDiffs;
+
+        public void Execute(int index)
+        {
+            nativeNewNormals[index] = nativeNormalDiffs[index] * nativeNewNormals[index];
+            nativeReadOnlyNewNormals[index] = nativeNewNormals[index];
         }
     }
 
-    private IEnumerator RecalculateMeshes()
+    [BurstCompile]
+    public struct DuplicatesJob : IJobParallelFor
     {
-        CR_running = true;
-        yield return new WaitUntil(() => (Time.time - lastDeform) >= 1);
+        public NativeArray<Vector3> nativeNewNormals;
+        public NativeArray<Vector3> nativeReadOnlyNewNormals;
+        public NativeArray<int> nativeDuplicates;
 
-        foreach (Component renderer in Renderers)
+        public void Execute(int index)
         {
-            if (renderer == null)
+            if (nativeDuplicates[index] != 0)
             {
-                continue;
+                nativeNewNormals[index] = nativeReadOnlyNewNormals[nativeDuplicates[index]];
             }
-            Mesh sharedMesh = GetMesh(renderer);
-            if (sharedMesh == null)
-            {
-                continue;
-            }
-            if (!OrigMeshes.ContainsKey(sharedMesh))
-            {
-                continue;
-            }
-            if (!sharedMesh.isReadable)
-            {
-                continue;
-            }
-            RecalculateNormals(sharedMesh, 50f);
-            sharedMesh.RecalculateTangents();
         }
-
-        CR_running = false;
     }
 
     internal void AddDeformer(Deformer deformer)
@@ -539,183 +624,6 @@ public class DeformersController : CharaCustomFunctionController
     {
         yield return new WaitForEndOfFrame();
         DeformAll();
-    }
-
-    /*
- * The following code was taken from: http://schemingdeveloper.com
- *
- * Visit our game studio website: http://stopthegnomes.com
- *
- * License: You may use this code however you see fit, as long as you include this notice
- *          without any modifications.
- *
- *          You may not publish a paid asset on Unity store if its main function is based on
- *          the following code, but you may publish a paid asset that uses this code.
- *
- *          If you intend to use this in a Unity store asset or a commercial project, it would
- *          be appreciated, but not required, if you let me know with a link to the asset. If I
- *          don't get back to you just go ahead and use it anyway!
- *          http://schemingdeveloper.com/2017/03/26/better-method-recalculate-normals-unity-part-2/
- */
-    public void RecalculateNormals(Mesh mesh, float angle)
-    {
-
-        mesh.GetVertices(newVertices);
-        OrigMeshes[mesh].GetVertices(origVertices);
-
-        var cosineThreshold = Mathf.Cos(angle * Mathf.Deg2Rad);
-
-        OrigMeshes[mesh].GetNormals(normals);
-
-        // Holds the normal of each triangle in each sub mesh.
-        var triNormals = new Vector3[mesh.subMeshCount][];
-
-        var dictionary = new Dictionary<VertexKey, List<VertexEntry>>(newVertices.Count);
-
-        for (var subMeshIndex = 0; subMeshIndex < mesh.subMeshCount; ++subMeshIndex)
-        {
-
-            var triangles = mesh.GetTriangles(subMeshIndex);
-
-            triNormals[subMeshIndex] = new Vector3[triangles.Length / 3];
-
-            for (var i = 0; i < triangles.Length; i += 3)
-            {
-                int i1 = triangles[i];
-                int i2 = triangles[i + 1];
-                int i3 = triangles[i + 2];
-
-                if (newVertices[i1] == origVertices[i1] && newVertices[i2] == origVertices[i2] && newVertices[i3] == origVertices[i3])
-                {
-                    continue;
-                }
-
-                // Calculate the normal of the triangle
-                Vector3 p1 = newVertices[i2] - newVertices[i1];
-                Vector3 p2 = newVertices[i3] - newVertices[i1];
-                Vector3 normal = Vector3.Cross(p1, p2);
-                float magnitude = normal.magnitude;
-                if (magnitude > 0) normal /= magnitude;
-                int triIndex = i / 3;
-                triNormals[subMeshIndex][triIndex] = normal;
-
-                List<VertexEntry> entry;
-                VertexKey key;
-
-                if (!dictionary.TryGetValue(key = new VertexKey(newVertices[i1]), out entry))
-                {
-                    entry = new List<VertexEntry>(4);
-                    dictionary.Add(key, entry);
-                }
-                entry.Add(new VertexEntry(subMeshIndex, triIndex, i1));
-
-                if (!dictionary.TryGetValue(key = new VertexKey(newVertices[i2]), out entry))
-                {
-                    entry = new List<VertexEntry>();
-                    dictionary.Add(key, entry);
-                }
-                entry.Add(new VertexEntry(subMeshIndex, triIndex, i2));
-
-                if (!dictionary.TryGetValue(key = new VertexKey(newVertices[i3]), out entry))
-                {
-                    entry = new List<VertexEntry>();
-                    dictionary.Add(key, entry);
-                }
-                entry.Add(new VertexEntry(subMeshIndex, triIndex, i3));
-            }
-        }
-
-        // Each entry in the dictionary represents a unique vertex position.
-
-        foreach (var vertList in dictionary.Values)
-        {
-            for (var i = 0; i < vertList.Count; ++i)
-            {
-
-                var sum = new Vector3();
-                var lhsEntry = vertList[i];
-
-                for (var j = 0; j < vertList.Count; ++j)
-                {
-                    var rhsEntry = vertList[j];
-
-                    if (lhsEntry.VertexIndex == rhsEntry.VertexIndex)
-                    {
-                        sum += triNormals[rhsEntry.MeshIndex][rhsEntry.TriangleIndex];
-                    }
-                    else
-                    {
-                        // The dot product is the cosine of the angle between the two triangles.
-                        // A larger cosine means a smaller angle.
-                        var dot = Vector3.Dot(
-                            triNormals[lhsEntry.MeshIndex][lhsEntry.TriangleIndex],
-                            triNormals[rhsEntry.MeshIndex][rhsEntry.TriangleIndex]);
-                        if (dot >= cosineThreshold)
-                        {
-                            sum += triNormals[rhsEntry.MeshIndex][rhsEntry.TriangleIndex];
-                        }
-                    }
-                }
-
-                normals[lhsEntry.VertexIndex] = sum.normalized;
-            }
-        }
-
-        mesh.SetNormals(normals);
-    }
-
-    private struct VertexKey
-    {
-        private readonly long _x;
-        private readonly long _y;
-        private readonly long _z;
-
-        // Change this if you require a different precision.
-        private const int Tolerance = 100000;
-
-        // Magic FNV values. Do not change these.
-        private const long FNV32Init = 0x811c9dc5;
-        private const long FNV32Prime = 0x01000193;
-
-        public VertexKey(Vector3 position)
-        {
-            _x = (long)(Mathf.Round(position.x * Tolerance));
-            _y = (long)(Mathf.Round(position.y * Tolerance));
-            _z = (long)(Mathf.Round(position.z * Tolerance));
-        }
-
-        public override bool Equals(object obj)
-        {
-            var key = (VertexKey)obj;
-            return _x == key._x && _y == key._y && _z == key._z;
-        }
-
-        public override int GetHashCode()
-        {
-            long rv = FNV32Init;
-            rv ^= _x;
-            rv *= FNV32Prime;
-            rv ^= _y;
-            rv *= FNV32Prime;
-            rv ^= _z;
-            rv *= FNV32Prime;
-
-            return rv.GetHashCode();
-        }
-    }
-
-    private struct VertexEntry
-    {
-        public int MeshIndex;
-        public int TriangleIndex;
-        public int VertexIndex;
-
-        public VertexEntry(int meshIndex, int triIndex, int vertIndex)
-        {
-            MeshIndex = meshIndex;
-            TriangleIndex = triIndex;
-            VertexIndex = vertIndex;
-        }
     }
 }
 
@@ -787,7 +695,7 @@ public abstract class Deformer : MonoBehaviour
         }
     }
 
-    void LateUpdate()
+    void Update()
     {
         if (N1.localScale != oldN1Scale)
         {
@@ -956,7 +864,6 @@ public class Squeezer : Deformer
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
-        JobHandle.ScheduleBatchedJobs();
         jobHandle.Complete();
     }
 }
@@ -1017,7 +924,6 @@ public class Bulger : Deformer
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
-        JobHandle.ScheduleBatchedJobs();
         jobHandle.Complete();
     }
 }
@@ -1079,7 +985,6 @@ public class Mover : Deformer
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
-        JobHandle.ScheduleBatchedJobs();
         jobHandle.Complete();
     }
 }
@@ -1143,7 +1048,6 @@ public class Rotator : Deformer
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
-        JobHandle.ScheduleBatchedJobs();
         jobHandle.Complete();
     }
 }
