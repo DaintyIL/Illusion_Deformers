@@ -22,7 +22,7 @@ using Unity.Burst;
 public class Deformers : BaseUnityPlugin
 {
     public const string GUID = "dainty.deformers";
-    public const string Version = "0.4";
+    public const string Version = "0.5";
     internal static new ManualLogSource Logger;
     void Awake()
     {
@@ -266,6 +266,10 @@ public class DeformersController : CharaCustomFunctionController
             copyMesh.name = name;
             SetMesh(renderer, copyMesh);
 
+            if (!sharedMesh.isReadable)
+            {
+                continue;
+            }
             copyMesh.GetNormals(normals);
             copyMesh.RecalculateNormals();
             copyMesh.GetNormals(newNormals);
@@ -292,7 +296,6 @@ public class DeformersController : CharaCustomFunctionController
                 }
             }
             DuplicateVectors.Add(copyMesh, duplicates);
-
         }
 
         if (reload)
@@ -635,6 +638,8 @@ public abstract class Deformer : MonoBehaviour
 {
     public Transform N1;
     public Transform N2;
+    public Transform SphereA;
+    public Transform SphereB;
     private Vector3 oldN1Position = Vector3.zero;
     private Vector3 oldN1Rotation = Vector3.zero;
     private Vector3 oldN1Scale = Vector3.zero;
@@ -648,8 +653,19 @@ public abstract class Deformer : MonoBehaviour
     public float radius = 1.09f;
     public float falloff = 1;
     public float strength = 0.2f;
+    public float axisWeight = 1f;
+    public float height = 1f;
     public Vector3 point1;
     public Vector3 point2;
+    public Vector3 sphereA;
+    public Vector3 sphereB;
+    public SelectorType selectorType = SelectorType.Sphere;
+
+    public enum SelectorType
+    {
+        Sphere,
+        Capsule
+    }
 
     void Start()
     {
@@ -703,11 +719,23 @@ public abstract class Deformer : MonoBehaviour
     {
         if (N1.localScale != oldN1Scale)
         {
-            //keep N1 scale proportional, it's a sphere.
             Vector3[,] addMove = deformersController.GetComponent<ChaControl>().nowCoordinate.accessory.parts[AccessoryIndex].addMove;
-            addMove[0, 2] = new Vector3(N1.localScale.x, N1.localScale.x, N1.localScale.x);
+            Vector3 scale = N1.localScale;
+            if (selectorType == SelectorType.Sphere)
+            {
+                scale = new Vector3(N1.localScale.x, N1.localScale.x, N1.localScale.x);
+                N1.localScale = scale;
+            }
+            if (selectorType == SelectorType.Capsule)
+            {
+                scale = new Vector3(N1.localScale.x, N1.localScale.y, N1.localScale.x);
+                N1.localScale = scale;
+                SphereA.localScale = new Vector3(1 / N1.localScale.x, 1 / N1.localScale.y, 1 / N1.localScale.z) * N1.localScale.x;
+                SphereB.localScale = SphereA.localScale;
+            }
+            addMove[0, 2] = scale;
             deformersController.GetComponent<ChaControl>().nowCoordinate.accessory.parts[AccessoryIndex].addMove = addMove;
-            N1.localScale = new Vector3(N1.localScale.x, N1.localScale.x, N1.localScale.x);
+            N1.localScale = scale;
             if (MakerAPI.InsideMaker)
             {
                 AccessoriesApi.GetCvsAccessory().UpdateCustomUI();
@@ -790,7 +818,9 @@ public abstract class Deformer : MonoBehaviour
     {
         radius = N1.localScale.x / 2;
         strength = N2.localScale.x;
+        height = (N1.localScale.y / 2) + radius;
         falloff = N2.localScale.y;
+        axisWeight = N2.localScale.z;
         if (falloff == 0.01f)
         {
             falloff = 0f;
@@ -798,6 +828,10 @@ public abstract class Deformer : MonoBehaviour
         if (strength == 0.01f)
         {
             strength = 0f;
+        }
+        if (axisWeight == 0.01f)
+        {
+            axisWeight = 0f;
         }
     }
 
@@ -810,8 +844,17 @@ public abstract class Deformer : MonoBehaviour
             point1 = RendererWorldToLocalMatrix.MultiplyPoint3x4(point1);
             point2 = RendererWorldToLocalMatrix.MultiplyPoint3x4(point2);
         }
+        if (selectorType == SelectorType.Capsule)
+        {
+            sphereA = SphereA.position;
+            sphereB = SphereB.position;
+            if (skinned)
+            {
+                sphereA = RendererWorldToLocalMatrix.MultiplyPoint3x4(sphereA);
+                sphereB = RendererWorldToLocalMatrix.MultiplyPoint3x4(sphereB);
+            }
+        }
     }
-
 }
 
 public class Squeezer : Deformer
@@ -833,16 +876,65 @@ public class Squeezer : Deformer
         public Matrix4x4 RootBoneWorldToLocalMatrix;
         public bool skinned;
         public NativeArray<bool> deformed;
+        public SelectorType selectorType;
+        public Vector3 sphereA;
+        public Vector3 sphereB;
+        public float height;
+        public float axisWeight;
 
         public void Execute(int index)
         {
-            float distance = Vector3.Distance(nativeBakedVertices[index], point1);
-            if (distance < radius)
+            if(selectorType == SelectorType.Sphere)
             {
-                deformed[0] = true;
-                float factor = 1 - ((distance / radius) * falloff);
-                nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], point2, strength * factor);
-                nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                float distance = Vector3.Distance(nativeBakedVertices[index], point1);
+                if (distance < radius)
+                {
+                    deformed[0] = true;
+                    float factor = 1 - ((distance / radius) * falloff);
+                    nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], point2, strength * factor);
+                    nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                }
+            }
+            if (selectorType == SelectorType.Capsule)
+            {
+                Vector3 sphereVector = sphereB - sphereA;
+                Vector3 capsuleEndA = sphereA - (radius * sphereVector.normalized);
+                Vector3 capsuleEndB = sphereB + (radius * sphereVector.normalized);
+                Vector3 capsuleVector = capsuleEndB - capsuleEndA;
+                Vector3 p = nativeBakedVertices[index] - capsuleEndA;
+                float dot = p.x * capsuleVector.x + p.y * capsuleVector.y + p.z * capsuleVector.z;
+                float lengthsq = capsuleVector.sqrMagnitude;
+                if ((dot > 0f) && (dot < lengthsq))
+                {
+                    Vector3 closestPointOnAxis;
+                    float f = Vector3.Dot(nativeBakedVertices[index] - sphereA, sphereVector.normalized);
+                    if (f < 0)
+                    {
+                        closestPointOnAxis = sphereA;
+                    }
+                    else if (f > sphereVector.magnitude)
+                    {
+                        closestPointOnAxis = sphereB;
+                    }
+                    else closestPointOnAxis = sphereA + (f * sphereVector.normalized);
+
+                    float axisDistance = Vector3.Distance(closestPointOnAxis, nativeBakedVertices[index]);
+                    if (axisDistance < radius)
+                    {
+                        deformed[0] = true;
+                        closestPointOnAxis = sphereA + (f * sphereVector.normalized);
+                        axisDistance = Vector3.Distance(closestPointOnAxis, nativeBakedVertices[index]);
+                        float axisFactor = 1 - ((axisDistance / radius) * falloff);
+
+                        float centerDistance = Vector3.Distance(point1, nativeBakedVertices[index]);
+                        float centerFactor = 1 - ((centerDistance / height) * falloff);
+
+                        float factor = Mathf.Lerp(axisFactor, centerFactor, axisWeight);
+                        closestPointOnAxis = Vector3.Lerp(closestPointOnAxis, point1, axisWeight);
+                        nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], closestPointOnAxis + (point2 - point1), strength * factor);
+                        nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                    }
+                }
             }
         }
     }
@@ -867,7 +959,12 @@ public class Squeezer : Deformer
             nativeBoneWeights = nativeBoneWeights,
             nativeboneMatrices = nativeboneMatrices,
             skinned = skinned,
-            deformed = deformed
+            deformed = deformed,
+            selectorType = selectorType,
+            sphereA = sphereA,
+            sphereB = sphereB,
+            axisWeight = axisWeight,
+            height = height
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
@@ -895,17 +992,67 @@ public class Bulger : Deformer
         public Matrix4x4 RootBoneWorldToLocalMatrix;
         public bool skinned;
         public NativeArray<bool> deformed;
+        public SelectorType selectorType;
+        public Vector3 sphereA;
+        public Vector3 sphereB;
+        public float height;
+        public float axisWeight;
 
         public void Execute(int index)
         {
-            float distance = Vector3.Distance(nativeBakedVertices[index], point1);
-            if (distance < radius)
+            if (selectorType == SelectorType.Sphere)
             {
-                deformed[0] = true;
-                Vector3 newPoint = nativeBakedVertices[index] + (nativeBakedVertices[index] - point2);
-                float factor = 1 - ((distance / radius) * falloff);
-                nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
-                nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                float distance = Vector3.Distance(nativeBakedVertices[index], point1);
+                if (distance < radius)
+                {
+                    deformed[0] = true;
+                    Vector3 newPoint = nativeBakedVertices[index] + (nativeBakedVertices[index] - point2);
+                    float factor = 1 - ((distance / radius) * falloff);
+                    nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
+                    nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                }
+            }
+            if (selectorType == SelectorType.Capsule)
+            {
+                Vector3 sphereVector = sphereB - sphereA;
+                Vector3 capsuleEndA = sphereA - (radius * sphereVector.normalized);
+                Vector3 capsuleEndB = sphereB + (radius * sphereVector.normalized);
+                Vector3 capsuleVector = capsuleEndB - capsuleEndA;
+                Vector3 p = nativeBakedVertices[index] - capsuleEndA;
+                float dot = p.x * capsuleVector.x + p.y * capsuleVector.y + p.z * capsuleVector.z;
+                float lengthsq = capsuleVector.sqrMagnitude;
+                if ((dot > 0f) && (dot < lengthsq))
+                {
+                    Vector3 closestPointOnAxis;
+                    float f = Vector3.Dot(nativeBakedVertices[index] - sphereA, sphereVector.normalized);
+                    if (f < 0)
+                    {
+                        closestPointOnAxis = sphereA;
+                    }
+                    else if (f > sphereVector.magnitude)
+                    {
+                        closestPointOnAxis = sphereB;
+                    }
+                    else closestPointOnAxis = sphereA + (f * sphereVector.normalized);
+
+                    float axisDistance = Vector3.Distance(closestPointOnAxis, nativeBakedVertices[index]);
+                    if (axisDistance < radius)
+                    {
+                        deformed[0] = true;
+                        closestPointOnAxis = sphereA + (f * sphereVector.normalized);
+                        axisDistance = Vector3.Distance(closestPointOnAxis, nativeBakedVertices[index]);
+                        float axisFactor = 1 - ((axisDistance / radius) * falloff);
+
+                        float centerDistance = Vector3.Distance(point1, nativeBakedVertices[index]);
+                        float centerFactor = 1 - ((centerDistance / height) * falloff);
+
+                        float factor = Mathf.Lerp(axisFactor, centerFactor, axisWeight);
+                        closestPointOnAxis = Vector3.Lerp(closestPointOnAxis, point1, axisWeight);
+                        Vector3 newPoint = nativeBakedVertices[index] + (nativeBakedVertices[index] - (closestPointOnAxis + (point2 - point1)));
+                        nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
+                        nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                    }
+                }
             }
         }
     }
@@ -930,7 +1077,12 @@ public class Bulger : Deformer
             nativeBoneWeights = nativeBoneWeights,
             nativeboneMatrices = nativeboneMatrices,
             skinned = skinned,
-            deformed = deformed
+            deformed = deformed,
+            selectorType = selectorType,
+            sphereA = sphereA,
+            sphereB = sphereB,
+            axisWeight = axisWeight,
+            height = height
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
@@ -958,17 +1110,66 @@ public class Mover : Deformer
         public Vector3 moveVector;
         public bool skinned;
         public NativeArray<bool> deformed;
+        public SelectorType selectorType;
+        public Vector3 sphereA;
+        public Vector3 sphereB;
+        public float height;
+        public float axisWeight;
 
         public void Execute(int index)
         {
-            float distance = Vector3.Distance(nativeBakedVertices[index], point1);
-            if (distance < radius)
+            if (selectorType == SelectorType.Sphere)
             {
-                deformed[0] = true;
-                Vector3 newPoint = nativeBakedVertices[index] + moveVector;
-                float factor = 1 - ((distance / radius) * falloff);
-                nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
-                nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                float distance = Vector3.Distance(nativeBakedVertices[index], point1);
+                if (distance < radius)
+                {
+                    deformed[0] = true;
+                    Vector3 newPoint = nativeBakedVertices[index] + moveVector;
+                    float factor = 1 - ((distance / radius) * falloff);
+                    nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
+                    nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                }
+            }
+            if (selectorType == SelectorType.Capsule)
+            {
+                Vector3 sphereVector = sphereB - sphereA;
+                Vector3 capsuleEndA = sphereA - (radius * sphereVector.normalized);
+                Vector3 capsuleEndB = sphereB + (radius * sphereVector.normalized);
+                Vector3 capsuleVector = capsuleEndB - capsuleEndA;
+                Vector3 p = nativeBakedVertices[index] - capsuleEndA;
+                float dot = p.x * capsuleVector.x + p.y * capsuleVector.y + p.z * capsuleVector.z;
+                float lengthsq = capsuleVector.sqrMagnitude;
+                if ((dot > 0f) && (dot < lengthsq))
+                {
+                    Vector3 closestPointOnAxis;
+                    float f = Vector3.Dot(nativeBakedVertices[index] - sphereA, sphereVector.normalized);
+                    if (f < 0)
+                    {
+                        closestPointOnAxis = sphereA;
+                    }
+                    else if (f > sphereVector.magnitude)
+                    {
+                        closestPointOnAxis = sphereB;
+                    }
+                    else closestPointOnAxis = sphereA + (f * sphereVector.normalized);
+
+                    float axisDistance = Vector3.Distance(closestPointOnAxis, nativeBakedVertices[index]);
+                    if (axisDistance < radius)
+                    {
+                        deformed[0] = true;
+                        closestPointOnAxis = sphereA + (f * sphereVector.normalized);
+                        axisDistance = Vector3.Distance(closestPointOnAxis, nativeBakedVertices[index]);
+                        float axisFactor = 1 - ((axisDistance / radius) * falloff);
+
+                        float centerDistance = Vector3.Distance(point1, nativeBakedVertices[index]);
+                        float centerFactor = 1 - ((centerDistance / height) * falloff);
+
+                        float factor = Mathf.Lerp(axisFactor, centerFactor, axisWeight);
+                        Vector3 newPoint = nativeBakedVertices[index] + moveVector;
+                        nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
+                        nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                    }
+                }
             }
         }
     }
@@ -994,7 +1195,12 @@ public class Mover : Deformer
             nativeboneMatrices = nativeboneMatrices,
             moveVector = point2 - point1,
             skinned = skinned,
-            deformed = deformed
+            deformed = deformed,
+            selectorType = selectorType,
+            sphereA = sphereA,
+            sphereB = sphereB,
+            axisWeight = axisWeight,
+            height = height
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
@@ -1023,17 +1229,70 @@ public class Rotator : Deformer
         public bool skinned;
         public Quaternion rotation;
         public NativeArray<bool> deformed;
+        public SelectorType selectorType;
+        public Vector3 sphereA;
+        public Vector3 sphereB;
+        public float height;
+        public float axisWeight;
 
         public void Execute(int index)
         {
-            float distance = Vector3.Distance(nativeBakedVertices[index], point1);
-            if (distance < radius)
+
+
+            if (selectorType == SelectorType.Sphere)
             {
-                deformed[0] = true;
-                Vector3 newPoint = point2 + (rotation * (nativeBakedVertices[index] - point2));
-                float factor = 1 - ((distance / radius) * falloff);
-                nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
-                nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                float distance = Vector3.Distance(nativeBakedVertices[index], point1);
+                if (distance < radius)
+                {
+                    deformed[0] = true;
+                    Vector3 newPoint = point2 + (rotation * (nativeBakedVertices[index] - point2));
+                    float factor = 1 - ((distance / radius) * falloff);
+                    nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
+                    nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                }
+            }
+            if (selectorType == SelectorType.Capsule)
+            {
+                Vector3 sphereVector = sphereB - sphereA;
+                Vector3 capsuleEndA = sphereA - (radius * sphereVector.normalized);
+                Vector3 capsuleEndB = sphereB + (radius * sphereVector.normalized);
+                Vector3 capsuleVector = capsuleEndB - capsuleEndA;
+                Vector3 p = nativeBakedVertices[index] - capsuleEndA;
+                float dot = p.x * capsuleVector.x + p.y * capsuleVector.y + p.z * capsuleVector.z;
+                float lengthsq = capsuleVector.sqrMagnitude;
+                if ((dot > 0f) && (dot < lengthsq))
+                {
+                    Vector3 closestPointOnAxis;
+                    float f = Vector3.Dot(nativeBakedVertices[index] - sphereA, sphereVector.normalized);
+                    if (f < 0)
+                    {
+                        closestPointOnAxis = sphereA;
+                    }
+                    else if (f > sphereVector.magnitude)
+                    {
+                        closestPointOnAxis = sphereB;
+                    }
+                    else closestPointOnAxis = sphereA + (f * sphereVector.normalized);
+
+                    float axisDistance = Vector3.Distance(closestPointOnAxis, nativeBakedVertices[index]);
+                    if (axisDistance < radius)
+                    {
+                        deformed[0] = true;
+                        closestPointOnAxis = sphereA + (f * sphereVector.normalized);
+                        axisDistance = Vector3.Distance(closestPointOnAxis, nativeBakedVertices[index]);
+                        float axisFactor = 1 - ((axisDistance / radius) * falloff);
+
+                        float centerDistance = Vector3.Distance(point1, nativeBakedVertices[index]);
+                        float centerFactor = 1 - ((centerDistance / height) * falloff);
+
+                        float factor = Mathf.Lerp(axisFactor, centerFactor, axisWeight);
+                        closestPointOnAxis = Vector3.Lerp(closestPointOnAxis, point1, axisWeight);
+                        Vector3 newPoint2 = closestPointOnAxis + (point2 - point1);
+                        Vector3 newPoint = newPoint2 + (rotation * (nativeBakedVertices[index] - newPoint2));
+                        nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], newPoint, strength * factor);
+                        nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                    }
+                }
             }
         }
     }
@@ -1060,7 +1319,12 @@ public class Rotator : Deformer
             moveVector = point2 - point1,
             skinned = skinned,
             rotation = N2.localRotation,
-            deformed = deformed
+            deformed = deformed,
+            selectorType = selectorType,
+            sphereA = sphereA,
+            sphereB = sphereB,
+            axisWeight = axisWeight,
+            height = height
         };
 
         JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
