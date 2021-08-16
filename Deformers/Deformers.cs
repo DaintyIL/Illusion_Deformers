@@ -22,7 +22,7 @@ using Unity.Burst;
 public class Deformers : BaseUnityPlugin
 {
     public const string GUID = "dainty.deformers";
-    public const string Version = "0.5";
+    public const string Version = "0.6";
     internal static new ManualLogSource Logger;
     void Awake()
     {
@@ -508,6 +508,7 @@ public class DeformersController : CharaCustomFunctionController
             NativeArray<Vector3> nativeBakedVertices = new NativeArray<Vector3>(bakedVertices.ToArray(), Allocator.Temp);
             NativeArray<bool> deformed = new NativeArray<bool>(1, Allocator.Temp);
             deformed[0] = false;
+            NativeArray<Vector3> nativeNormals = new NativeArray<Vector3>(normals.ToArray(), Allocator.Temp);
             foreach (Deformer deformer in DeformerList)
             {
                 if (!deformer.gameObject.activeInHierarchy)
@@ -520,14 +521,14 @@ public class DeformersController : CharaCustomFunctionController
                     {
                         if (material.shader.name == deformer.FilterMaterial.shader.name)
                         {
-                            deformer.Deform(nativeNewVertices, nativeBakedVertices, nativeboneMatrices, nativeBoneWeights, rendererTransform.localToWorldMatrix, rendererTransform.worldToLocalMatrix, rootBoneWorldToLocalMatrix, skinned, deformed);
+                            deformer.Deform(nativeNewVertices, nativeBakedVertices, nativeboneMatrices, nativeBoneWeights, rendererTransform.localToWorldMatrix, rendererTransform.worldToLocalMatrix, rootBoneWorldToLocalMatrix, skinned, deformed, nativeNormals);
                             break;
                         }
                     }
                 }
                 else
                 {
-                    deformer.Deform(nativeNewVertices, nativeBakedVertices, nativeboneMatrices, nativeBoneWeights, rendererTransform.localToWorldMatrix, rendererTransform.worldToLocalMatrix, rootBoneWorldToLocalMatrix, skinned, deformed);
+                    deformer.Deform(nativeNewVertices, nativeBakedVertices, nativeboneMatrices, nativeBoneWeights, rendererTransform.localToWorldMatrix, rendererTransform.worldToLocalMatrix, rootBoneWorldToLocalMatrix, skinned, deformed, nativeNormals);
                 }
             }
 
@@ -760,7 +761,7 @@ public abstract class Deformer : MonoBehaviour
         oldShaderName = FilterMaterial.shader.name;
     }
 
-    public abstract void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeBoneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed);
+    public abstract void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeBoneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed, NativeArray<Vector3> nativeNormals);
 
     public static Matrix4x4 GetReverseSkinningMatrix(NativeArray<Matrix4x4> boneMatrices, BoneWeight weight)
     {
@@ -857,6 +858,238 @@ public abstract class Deformer : MonoBehaviour
     }
 }
 
+public class Expander : Deformer
+{
+    [BurstCompile]
+    public struct DeformJob : IJobParallelFor
+    {
+        public float radius;
+        public float falloff;
+        public float strength;
+        public NativeArray<Vector3> nativeNewVertices;
+        public NativeArray<Vector3> nativeBakedVertices;
+        public Vector3 point1;
+        public Vector3 point2;
+        public NativeArray<Matrix4x4> nativeboneMatrices;
+        public NativeArray<BoneWeight> nativeBoneWeights;
+        public Matrix4x4 RendererWorldToLocalMatrix;
+        public Matrix4x4 RendererLocalToWorldMatrix;
+        public Matrix4x4 RootBoneWorldToLocalMatrix;
+        public bool skinned;
+        public NativeArray<bool> deformed;
+        public SelectorType selectorType;
+        public Vector3 sphereA;
+        public Vector3 sphereB;
+        public float height;
+        public float axisWeight;
+        public NativeArray<Vector3> nativeNormals;
+
+        public void Execute(int index)
+        {
+            if (selectorType == SelectorType.Sphere)
+            {
+                float distance = Vector3.Distance(nativeBakedVertices[index], point1);
+                if (distance < radius)
+                {
+                    deformed[0] = true;
+                    float factor = 1 - ((distance / radius) * falloff);
+                    nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], nativeBakedVertices[index] + (nativeNormals[index].normalized / 10), strength * factor);
+                    nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                }
+            }
+            if (selectorType == SelectorType.Capsule)
+            {
+                Vector3 sphereVector = sphereB - sphereA;
+                Vector3 capsuleEndA = sphereA - (radius * sphereVector.normalized);
+                Vector3 capsuleEndB = sphereB + (radius * sphereVector.normalized);
+                Vector3 capsuleVector = capsuleEndB - capsuleEndA;
+                Vector3 p = nativeBakedVertices[index] - capsuleEndA;
+                float dot = p.x * capsuleVector.x + p.y * capsuleVector.y + p.z * capsuleVector.z;
+                float lengthsq = capsuleVector.sqrMagnitude;
+                if ((dot > 0f) && (dot < lengthsq))
+                {
+                    Vector3 closestPointOnAxis;
+                    float f = Vector3.Dot(nativeBakedVertices[index] - sphereA, sphereVector.normalized);
+                    if (f < 0)
+                    {
+                        closestPointOnAxis = sphereA;
+                    }
+                    else if (f > sphereVector.magnitude)
+                    {
+                        closestPointOnAxis = sphereB;
+                    }
+                    else closestPointOnAxis = sphereA + (f * sphereVector.normalized);
+
+                    float axisDistance = Vector3.Distance(closestPointOnAxis, nativeBakedVertices[index]);
+                    if (axisDistance < radius)
+                    {
+                        deformed[0] = true;
+                        closestPointOnAxis = sphereA + (f * sphereVector.normalized);
+                        axisDistance = Vector3.Distance(closestPointOnAxis, nativeBakedVertices[index]);
+                        float axisFactor = 1 - ((axisDistance / radius) * falloff);
+
+                        float centerDistance = Vector3.Distance(point1, nativeBakedVertices[index]);
+                        float centerFactor = 1 - ((centerDistance / height) * falloff);
+
+                        float factor = Mathf.Lerp(axisFactor, centerFactor, axisWeight);
+                        nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], nativeBakedVertices[index] + (nativeNormals[index].normalized / 10), strength * factor);
+                        nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                    }
+                }
+            }
+        }
+    }
+
+    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed, NativeArray<Vector3> nativeNormals)
+    {
+        SetDeformParams();
+        SetPoints(RendererWorldToLocalMatrix, skinned);
+
+        DeformJob deformJob = new DeformJob
+        {
+            nativeNewVertices = nativeNewVertices,
+            nativeBakedVertices = nativeBakedVertices,
+            radius = radius,
+            falloff = falloff,
+            strength = strength,
+            point1 = point1,
+            point2 = point2,
+            RendererLocalToWorldMatrix = RendererLocalToWorldMatrix,
+            RendererWorldToLocalMatrix = RendererWorldToLocalMatrix,
+            RootBoneWorldToLocalMatrix = RootBoneWorldToLocalMatrix,
+            nativeBoneWeights = nativeBoneWeights,
+            nativeboneMatrices = nativeboneMatrices,
+            skinned = skinned,
+            deformed = deformed,
+            selectorType = selectorType,
+            sphereA = sphereA,
+            sphereB = sphereB,
+            axisWeight = axisWeight,
+            height = height,
+            nativeNormals = nativeNormals
+        };
+
+        JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
+        jobHandle.Complete();
+    }
+}
+
+public class Shrinker : Deformer
+{
+    [BurstCompile]
+    public struct DeformJob : IJobParallelFor
+    {
+        public float radius;
+        public float falloff;
+        public float strength;
+        public NativeArray<Vector3> nativeNewVertices;
+        public NativeArray<Vector3> nativeBakedVertices;
+        public Vector3 point1;
+        public Vector3 point2;
+        public NativeArray<Matrix4x4> nativeboneMatrices;
+        public NativeArray<BoneWeight> nativeBoneWeights;
+        public Matrix4x4 RendererWorldToLocalMatrix;
+        public Matrix4x4 RendererLocalToWorldMatrix;
+        public Matrix4x4 RootBoneWorldToLocalMatrix;
+        public bool skinned;
+        public NativeArray<bool> deformed;
+        public SelectorType selectorType;
+        public Vector3 sphereA;
+        public Vector3 sphereB;
+        public float height;
+        public float axisWeight;
+        public NativeArray<Vector3> nativeNormals;
+
+        public void Execute(int index)
+        {
+            if (selectorType == SelectorType.Sphere)
+            {
+                float distance = Vector3.Distance(nativeBakedVertices[index], point1);
+                if (distance < radius)
+                {
+                    deformed[0] = true;
+                    float factor = 1 - ((distance / radius) * falloff);
+                    nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], nativeBakedVertices[index] - (nativeNormals[index].normalized/10), strength * factor);
+                    nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                }
+            }
+            if (selectorType == SelectorType.Capsule)
+            {
+                Vector3 sphereVector = sphereB - sphereA;
+                Vector3 capsuleEndA = sphereA - (radius * sphereVector.normalized);
+                Vector3 capsuleEndB = sphereB + (radius * sphereVector.normalized);
+                Vector3 capsuleVector = capsuleEndB - capsuleEndA;
+                Vector3 p = nativeBakedVertices[index] - capsuleEndA;
+                float dot = p.x * capsuleVector.x + p.y * capsuleVector.y + p.z * capsuleVector.z;
+                float lengthsq = capsuleVector.sqrMagnitude;
+                if ((dot > 0f) && (dot < lengthsq))
+                {
+                    Vector3 closestPointOnAxis;
+                    float f = Vector3.Dot(nativeBakedVertices[index] - sphereA, sphereVector.normalized);
+                    if (f < 0)
+                    {
+                        closestPointOnAxis = sphereA;
+                    }
+                    else if (f > sphereVector.magnitude)
+                    {
+                        closestPointOnAxis = sphereB;
+                    }
+                    else closestPointOnAxis = sphereA + (f * sphereVector.normalized);
+
+                    float axisDistance = Vector3.Distance(closestPointOnAxis, nativeBakedVertices[index]);
+                    if (axisDistance < radius)
+                    {
+                        deformed[0] = true;
+                        closestPointOnAxis = sphereA + (f * sphereVector.normalized);
+                        axisDistance = Vector3.Distance(closestPointOnAxis, nativeBakedVertices[index]);
+                        float axisFactor = 1 - ((axisDistance / radius) * falloff);
+
+                        float centerDistance = Vector3.Distance(point1, nativeBakedVertices[index]);
+                        float centerFactor = 1 - ((centerDistance / height) * falloff);
+
+                        float factor = Mathf.Lerp(axisFactor, centerFactor, axisWeight);
+                        nativeBakedVertices[index] = Vector3.Lerp(nativeBakedVertices[index], nativeBakedVertices[index] - (nativeNormals[index].normalized/10), strength * factor);
+                        nativeNewVertices[index] = BakedToNewVertex(nativeBakedVertices[index], RendererWorldToLocalMatrix, RendererLocalToWorldMatrix, RootBoneWorldToLocalMatrix, nativeboneMatrices, nativeBoneWeights, index, skinned);
+                    }
+                }
+            }
+        }
+    }
+
+    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed, NativeArray<Vector3> nativeNormals)
+    {
+        SetDeformParams();
+        SetPoints(RendererWorldToLocalMatrix, skinned);
+
+        DeformJob deformJob = new DeformJob
+        {
+            nativeNewVertices = nativeNewVertices,
+            nativeBakedVertices = nativeBakedVertices,
+            radius = radius,
+            falloff = falloff,
+            strength = strength,
+            point1 = point1,
+            point2 = point2,
+            RendererLocalToWorldMatrix = RendererLocalToWorldMatrix,
+            RendererWorldToLocalMatrix = RendererWorldToLocalMatrix,
+            RootBoneWorldToLocalMatrix = RootBoneWorldToLocalMatrix,
+            nativeBoneWeights = nativeBoneWeights,
+            nativeboneMatrices = nativeboneMatrices,
+            skinned = skinned,
+            deformed = deformed,
+            selectorType = selectorType,
+            sphereA = sphereA,
+            sphereB = sphereB,
+            axisWeight = axisWeight,
+            height = height,
+            nativeNormals = nativeNormals
+        };
+
+        JobHandle jobHandle = deformJob.Schedule(nativeNewVertices.Length, 32);
+        jobHandle.Complete();
+    }
+}
+
 public class Squeezer : Deformer
 {
     [BurstCompile]
@@ -939,7 +1172,7 @@ public class Squeezer : Deformer
         }
     }
 
-    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed)
+    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed, NativeArray<Vector3> nativeNormals)
     {
         SetDeformParams();
         SetPoints(RendererWorldToLocalMatrix, skinned);
@@ -1057,7 +1290,7 @@ public class Bulger : Deformer
         }
     }
 
-    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed)
+    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed, NativeArray<Vector3> nativeNormals)
     {
         SetDeformParams();
         SetPoints(RendererWorldToLocalMatrix, skinned);
@@ -1174,7 +1407,7 @@ public class Mover : Deformer
         }
     }
 
-    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed)
+    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed, NativeArray<Vector3> nativeNormals)
     {
         SetDeformParams();
         SetPoints(RendererWorldToLocalMatrix, skinned);
@@ -1297,7 +1530,7 @@ public class Rotator : Deformer
         }
     }
 
-    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed)
+    public override void Deform(NativeArray<Vector3> nativeNewVertices, NativeArray<Vector3> nativeBakedVertices, NativeArray<Matrix4x4> nativeboneMatrices, NativeArray<BoneWeight> nativeBoneWeights, Matrix4x4 RendererLocalToWorldMatrix, Matrix4x4 RendererWorldToLocalMatrix, Matrix4x4 RootBoneWorldToLocalMatrix, bool skinned, NativeArray<bool> deformed, NativeArray<Vector3> nativeNormals)
     {
         SetDeformParams();
         SetPoints(RendererWorldToLocalMatrix, skinned);
